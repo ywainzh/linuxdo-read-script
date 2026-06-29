@@ -92,10 +92,10 @@
 
   /* ============ 2. 工具 ============ */
   const esc = (s) => (s || '').replace(/[<>&]/g, (c) =>
-    ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+      ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
 
   const csrfToken = () =>
-    (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+      (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
 
   async function fetchJSON(url) {
     const res = await fetch(url, {
@@ -277,8 +277,8 @@
       stream = data.post_stream.stream || [];
       data.post_stream.posts.forEach((p) => cache.set(p.id, p));
       ctx.op = (topic.details && topic.details.created_by && topic.details.created_by.username)
-        || (data.post_stream.posts.find((p) => p.post_number === 1) || {}).username
-        || null;
+          || (data.post_stream.posts.find((p) => p.post_number === 1) || {}).username
+          || null;
       return topic;
     }
 
@@ -301,8 +301,9 @@
     return { init, next, get topic() { return topic; } };
   }
 
-  /* ============ 6. 楼中楼挂载（找不到父级先暂存，块末回扫归位） ============ */
-  function attachPost(p, container, nodeMap, tracker, ctx, pending) {
+  /* ============ 6. 楼中楼挂载（去重 + 注册"进入视口补子树"） ============ */
+  function attachPost(p, container, nodeMap, tracker, ctx, pending, repliesIO) {
+    if (nodeMap.has(p.post_number)) return; // 已被某棵子树补全过 → 跳过，避免重复
     const parentNum = p.reply_to_post_number;
     const parentNode = parentNum && parentNum !== 1 ? nodeMap.get(parentNum) : null;
     const isReply = !!(parentNum && parentNum !== 1);
@@ -317,6 +318,11 @@
       container.appendChild(node);
     }
     if (tracker) tracker.observe(node);
+    // 有直接回复的楼 → 注册视口观察，滚入视口时才补全其子树
+    if (repliesIO && p.reply_count > 0 && p.post_number !== 1) {
+      node.dataset.replyCount = p.reply_count;
+      repliesIO.observe(node);
+    }
   }
 
   function reflowPending(nodeMap, pending) {
@@ -332,7 +338,7 @@
   /* ============ 7. 渲染单条（回复框惰性创建；图片懒加载） ============ */
   function renderPost(p, isReply, ctx) {
     const avatar = p.avatar_template
-      ? BASE + p.avatar_template.replace('{size}', '48') : '';
+        ? BASE + p.avatar_template.replace('{size}', '48') : '';
     const { count, acted, canAct } = likeInfo(p);
     const isOP = ctx.op && p.username === ctx.op;
     const isME = ME_USERNAME && p.username === ME_USERNAME;
@@ -370,7 +376,7 @@
     let box = post.querySelector(':scope > .ldp-replybox');
     if (box) return box;
     const username = (post.querySelector(':scope > .ldp-post-head .ldp-floor')?.textContent || '')
-      .replace(/^.*@/, '');
+        .replace(/^.*@/, '');
     box = document.createElement('div');
     box.className = 'ldp-replybox';
     box.innerHTML = `
@@ -405,7 +411,7 @@
         try {
           if (!acted) {
             await apiSend(`${BASE}/post_actions`, 'POST',
-              { id: postId, post_action_type_id: 2, flag_topic: false });
+                { id: postId, post_action_type_id: 2, flag_topic: false });
             likeBtn.classList.add('liked');
             likeBtn.dataset.acted = '1';
             countEl.textContent = (+countEl.textContent) + 1;
@@ -501,7 +507,7 @@
     });
   }
 
-  /* ============ 10. 弹窗主体 + 滚动加载（IO 哨兵） ============ */
+  /* ============ 10. 弹窗主体 + 滚动加载（IO 哨兵 + 子树按需补全） ============ */
   async function openModal(topicId, titleHint) {
     if (activeOverlay) {
       try { activeOverlay._ldpClose && activeOverlay._ldpClose(); } catch (e) {}
@@ -533,14 +539,39 @@
     const ctx = { op: null };
     const nodeMap = new Map();
     const pending = [];
+    const repliesLoaded = new Set();   // 本弹窗内已补全子树的楼号（去重）
     const loader = createLoader(topicId, ctx);
     const tracker = createReadTracker(topicId, body, nodeMap);
     let loading = false, done = false;
-    let sentinelIO = null;
+    let sentinelIO = null, repliesIO = null;
+
+    // 递归补全某楼的整棵子树（直接回复 → 孙子层递归）
+    async function expandReplies(parentNode, parentPostNumber, parentPostId) {
+      if (repliesLoaded.has(parentPostNumber)) return;
+      repliesLoaded.add(parentPostNumber);
+      let replies;
+      try {
+        replies = await fetchJSON(`${BASE}/posts/${parentPostId}/replies.json`);
+      } catch (e) { repliesLoaded.delete(parentPostNumber); return; }
+      if (!Array.isArray(replies)) return;
+      const wrap = parentNode.querySelector(':scope > .ldp-children');
+      for (const r of replies) {
+        if (nodeMap.has(r.post_number)) continue; // 主流或别处已渲染 → 跳过
+        const node = renderPost(r, true, ctx);
+        nodeMap.set(r.post_number, node);
+        wrap.appendChild(node);
+        if (tracker) tracker.observe(node);
+        if (r.reply_count > 0) {
+          // 父已在视口内，直接递归补全更深层（不再等视口）
+          expandReplies(node, r.post_number, r.id);
+        }
+      }
+    }
 
     const close = () => {
       tracker.stop();
       if (sentinelIO) sentinelIO.disconnect();
+      if (repliesIO) repliesIO.disconnect();
       overlay.remove();
       document.removeEventListener('keydown', onEsc);
       if (activeOverlay === overlay) activeOverlay = null;
@@ -555,7 +586,7 @@
       const topic = await loader.init();
       overlay.querySelector('.ldp-title').textContent = topic.title;
       overlay.querySelector('.ldp-meta').textContent =
-        `${topic.posts_count} 帖 · ${topic.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
+          `${topic.posts_count} 帖 · ${topic.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
 
       const bmBtn = overlay.querySelector('.ldp-bookmark');
       bmBtn.hidden = false;
@@ -569,12 +600,20 @@
       bindActions(modal, topicId, tracker, nodeMap, ctx);
       tracker.start();
 
-      // 底部哨兵：先入 DOM，再触发首屏加载
+      // 子树补全观察器：有回复的楼滚入视口才拉它的 replies（每楼一次后取消观察）
+      repliesIO = new IntersectionObserver((entries) => {
+        entries.forEach((en) => {
+          if (!en.isIntersecting) return;
+          const node = en.target;
+          repliesIO.unobserve(node);
+          expandReplies(node, +node.dataset.postNumber, node.dataset.postId);
+        });
+      }, { root: body, rootMargin: '150px' });
+
       const sentinel = document.createElement('div');
       sentinel.className = 'ldp-sentinel';
       body.appendChild(sentinel);
 
-      // 防御性插入：哨兵在则插其前，否则追加
       const putBeforeSentinel = (n) => {
         if (sentinel.parentNode === body) body.insertBefore(n, sentinel);
         else body.appendChild(n);
@@ -589,7 +628,7 @@
         try {
           const { posts, done: isDone } = await loader.next();
           const frag = document.createDocumentFragment();
-          posts.forEach((p) => attachPost(p, frag, nodeMap, tracker, ctx, pending));
+          posts.forEach((p) => attachPost(p, frag, nodeMap, tracker, ctx, pending, repliesIO));
           tip.remove();
           putBeforeSentinel(frag);
           reflowPending(nodeMap, pending);
@@ -609,7 +648,7 @@
         }
       };
 
-      await loadMore();          // 首屏（此时哨兵已在 body 中）
+      await loadMore();
 
       sentinelIO = new IntersectionObserver((entries) => {
         if (entries.some((en) => en.isIntersecting)) loadMore();
@@ -621,13 +660,10 @@
   }
 
   /* ============ 11. 拦截标题点击（列表标题 + 用户菜单/通知面板内的话题链接） ============ */
-  // Discourse 用户菜单面板的常见容器选择器（兼容新旧版本）
   const MENU_PANEL_SEL = '.user-menu, .quick-access-panel, #quick-access-notifications, .menu-panel, .panel-body';
 
   document.addEventListener('click', function (e) {
-    // 1) 列表标题链接
     let a = e.target.closest('a.title');
-    // 2) 若不是列表标题，再看是否是"用户菜单/通知面板"里的话题链接
     if (!a) {
       const inMenu = e.target.closest(MENU_PANEL_SEL);
       if (inMenu) {
@@ -636,7 +672,6 @@
       }
     }
     if (!a || a.classList.contains('ldp-open') || a.classList.contains('ldp-link-open')) return;
-
     const m = (a.getAttribute('href') || '').match(/\/t\/[^/]+\/(\d+)/);
     if (!m) return;
     e.preventDefault();
