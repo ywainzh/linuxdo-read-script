@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.0.2
+// @version      1.0.3
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -23,6 +23,7 @@
   let ME_USERNAME = null;
 
   const MENU_PANEL_SEL = '.menu-panel, .user-menu, .quick-access-panel, .notifications';
+  const SEARCH_SEL = '.search-results, .fps-result, .search-menu, .search-menu-container, .search-result-topic';
 
   /* ============ 1. 样式 ============ */
   const style = document.createElement('style');
@@ -52,17 +53,32 @@
     .ldp-body{flex:1;min-height:0;position:relative;
       padding:8px 20px 20px;overflow-y:auto;overscroll-behavior:contain;}
 
-    /* 加载遮罩 + 转圈动画 */
+    /* 骨架屏 */
     .ldp-loadmask{position:absolute;inset:0;z-index:5;
-      display:flex;flex-direction:column;align-items:center;justify-content:center;
-      gap:14px;background:var(--secondary,#fff);color:inherit;}
-    .ldp-spinner{width:38px;height:38px;border-radius:50%;
-      border:3px solid var(--primary-low,#e0e0e0);
-      border-top-color:var(--tertiary,#08c);
-      animation:ldp-spin .8s linear infinite;}
-    .ldp-loadmask-text{font-size:13px;opacity:.6;}
+      padding:8px 20px 20px;overflow:hidden;
+      background:var(--secondary,#fff);color:inherit;}
     .ldp-loadmask.hide{opacity:0;pointer-events:none;transition:opacity .25s ease;}
-    @keyframes ldp-spin{to{transform:rotate(360deg);}}
+    .ldp-sk{position:relative;overflow:hidden;border-radius:6px;
+      background:var(--primary-low,#e9e9e9);}
+    .ldp-sk::after{content:"";position:absolute;inset:0;
+      transform:translateX(-100%);
+      background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);
+      animation:ldp-shimmer 1.2s infinite;}
+    @keyframes ldp-shimmer{100%{transform:translateX(100%);}}
+    .ldp-sk-title{height:18px;width:55%;border-radius:6px;
+      display:inline-block;vertical-align:middle;}
+    .ldp-sk-meta{height:11px;width:35%;border-radius:5px;
+      display:inline-block;}
+    .ldp-sk-head{display:flex;align-items:center;gap:10px;margin:12px 0 10px;}
+    .ldp-sk-avatar{width:32px;height:32px;border-radius:50%;flex:none;}
+    .ldp-sk-line{height:12px;}
+    .ldp-sk-w30{width:30%;} .ldp-sk-w40{width:40%;} .ldp-sk-w60{width:60%;}
+    .ldp-sk-w80{width:80%;} .ldp-sk-w90{width:90%;} .ldp-sk-w100{width:100%;}
+    .ldp-sk-para .ldp-sk-line{margin-bottom:8px;}
+    .ldp-sk-divider{height:1px;background:var(--primary-low,#e0e0e0);margin:16px 0 12px;}
+    .ldp-sk-comment{display:flex;gap:10px;margin-bottom:18px;}
+    .ldp-sk-comment .ldp-sk-avatar{width:28px;height:28px;}
+    .ldp-sk-cbody{flex:1;}
 
     /* 楼主帖区块 */
     .ldp-topic{padding:4px 0 14px;}
@@ -140,10 +156,6 @@
     const p = (n) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
-  // 想用绝对时间，把上面整段换成：
-  // function fmtTime(iso){const d=new Date(iso);if(isNaN(d.getTime()))return'';
-  //   const p=n=>String(n).padStart(2,'0');
-  //   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;}
 
   const csrfToken = () =>
       (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
@@ -296,16 +308,18 @@
     };
   }
 
-  /* ============ 5. 分块加载 ============ */
+  /* ============ 5. 分块加载（含 track_visit 访问登记 + 重试保护） ============ */
   function createLoader(topicId) {
     let stream = [];
     const cache = new Map();
     let cursor = 0;
     let topic = null;
+    let failStreak = 0;
 
     async function init() {
       await ensureMe();
-      const data = await fetchJSON(`${BASE}/t/${topicId}.json`);
+      // track_visit=true 让服务端登记本次访问，计入“浏览的话题”统计
+      const data = await fetchJSON(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`);
       topic = data;
       stream = data.post_stream.stream || [];
       data.post_stream.posts.forEach((p) => cache.set(p.id, p));
@@ -319,15 +333,30 @@
     async function next() {
       if (cursor >= stream.length) return { posts: [], done: true };
       const slice = stream.slice(cursor, cursor + PAGE_SIZE);
-      cursor += slice.length;
-      const missing = slice.filter((id) => !cache.has(id));
-      if (missing.length) {
+      let missing = slice.filter((id) => !cache.has(id));
+
+      for (let attempt = 0; attempt < 2 && missing.length; attempt++) {
         const qs = missing.map((id) => `post_ids[]=${id}`).join('&');
         try {
           const part = await fetchJSON(`${BASE}/t/${topicId}/posts.json?${qs}`);
           part.post_stream.posts.forEach((p) => cache.set(p.id, p));
-        } catch (e) { /* 忽略单块失败 */ }
+        } catch (e) {}
+        missing = slice.filter((id) => !cache.has(id));
       }
+
+      if (missing.length) {
+        failStreak++;
+        if (failStreak >= 4) {
+          cursor += slice.length;
+          failStreak = 0;
+          const posts = slice.map((id) => cache.get(id)).filter(Boolean);
+          return { posts, done: cursor >= stream.length };
+        }
+        return { posts: [], done: false, retry: true };
+      }
+
+      failStreak = 0;
+      cursor += slice.length;
       const posts = slice.map((id) => cache.get(id)).filter(Boolean);
       return { posts, done: cursor >= stream.length };
     }
@@ -335,17 +364,15 @@
     return { init, next, get topic() { return topic; } };
   }
 
-  /* ============ 6. 楼层归位（区分楼主帖 / 评论区 / 楼中楼）============ */
+  /* ============ 6. 楼层归位 ============ */
   function attachPost(p, ctx) {
-    // 楼主帖（#1）单独进 topic 区，不进 nodeMap、不计入评论
     if (p.post_number === 1) {
       const node = renderPost(p, false, ctx);
       ctx.topicEl.appendChild(node);
       ctx.tracker.observe(node);
       return;
     }
-
-    if (ctx.nodeMap.has(p.post_number)) return; // 去重
+    if (ctx.nodeMap.has(p.post_number)) return;
 
     const parentNum = p.reply_to_post_number;
     const node = renderPost(p, !!(parentNum && parentNum !== 1), ctx);
@@ -360,7 +387,6 @@
     } else {
       ctx.commentsEl.appendChild(node);
     }
-
     ctx.tracker.observe(node);
     ctx.repliesIO.observe(node);
   }
@@ -380,7 +406,7 @@
     ctx.pending = rest;
   }
 
-  /* ============ 7. 渲染单条（楼层号置于行末，@ID 后跟时间）============ */
+  /* ============ 7. 渲染单条 ============ */
   function renderPost(p, isReply, ctx) {
     const avatar = p.avatar_template
         ? BASE + p.avatar_template.replace('{size}', '48') : '';
@@ -413,194 +439,158 @@
       </div>
       <div class="ldp-children"></div>
     `;
-    node.querySelectorAll('.ldp-content img').forEach((im) => {
-      im.loading = 'lazy';
-      im.decoding = 'async';
-    });
     return node;
   }
 
-  /* ============ 8. 回复框惰性创建 ============ */
+  /* ============ 8. 回复框 ============ */
   function ensureReplyBox(post) {
     let box = post.querySelector(':scope > .ldp-replybox');
     if (box) return box;
-    const username = (post.querySelector(':scope > .ldp-post-head .ldp-user')?.textContent || '')
-        .replace(/^@/, '');
+    const username = (post.querySelector(':scope > .ldp-post-head .ldp-user')?.textContent || '').replace(/^@/, '');
     box = document.createElement('div');
     box.className = 'ldp-replybox';
-    box.innerHTML = `
-      <textarea placeholder="回复 @${esc(username)} …"></textarea>
-      <button class="ldp-send">发送</button>`;
-    const children = post.querySelector(':scope > .ldp-children');
-    post.insertBefore(box, children);
+    box.innerHTML = `<textarea placeholder="回复 @${esc(username)} …"></textarea><button class="ldp-send">发送</button>`;
+    post.insertBefore(box, post.querySelector(':scope > .ldp-children'));
     return box;
   }
 
-  /* ============ 9. 事件委托：图片灯箱 / 点赞 / 回复 ============ */
+  /* ============ 9. 事件委托 ============ */
   function bindActions(modal, ctx) {
     modal.addEventListener('click', async (e) => {
       const img = e.target.closest('.ldp-content img');
-      if (img) {
-        e.preventDefault();
-        e.stopPropagation();
-        openLightbox(resolveOriginalSrc(img));
-        return;
-      }
-
+      if (img) { e.preventDefault(); e.stopPropagation(); openLightbox(resolveOriginalSrc(img)); return; }
       const post = e.target.closest('.ldp-post');
       if (!post) return;
-      const postId = post.dataset.postId;
-      const postNumber = +post.dataset.postNumber;
-
+      const postId = post.dataset.postId, postNumber = +post.dataset.postNumber;
       const likeBtn = e.target.closest('.ldp-like');
       if (likeBtn && !likeBtn.disabled) {
-        const countEl = likeBtn.querySelector('.ldp-like-count');
-        const acted = likeBtn.dataset.acted === '1';
+        const countEl = likeBtn.querySelector('.ldp-like-count'), acted = likeBtn.dataset.acted === '1';
         likeBtn.disabled = true;
         try {
           if (!acted) {
-            await apiSend(`${BASE}/post_actions`, 'POST',
-                { id: postId, post_action_type_id: 2, flag_topic: false });
-            likeBtn.classList.add('liked');
-            likeBtn.dataset.acted = '1';
+            await apiSend(`${BASE}/post_actions`, 'POST', { id: postId, post_action_type_id: 2, flag_topic: false });
+            likeBtn.classList.add('liked'); likeBtn.dataset.acted = '1';
             countEl.textContent = (+countEl.textContent) + 1;
           } else {
             await apiSend(`${BASE}/post_actions/${postId}?post_action_type_id=2`, 'DELETE');
-            likeBtn.classList.remove('liked');
-            likeBtn.dataset.acted = '0';
+            likeBtn.classList.remove('liked'); likeBtn.dataset.acted = '0';
             countEl.textContent = Math.max(0, (+countEl.textContent) - 1);
           }
-        } catch (err) {
-          alert('操作失败：' + err.message + '（取消赞有时间限制，或需登录/权限）');
-        } finally {
-          likeBtn.disabled = false;
-        }
+        } catch (err) { alert('操作失败：' + err.message); } finally { likeBtn.disabled = false; }
         return;
       }
-
       const replyBtn = e.target.closest('.ldp-replybtn');
-      if (replyBtn) {
-        const box = ensureReplyBox(post);
-        box.classList.toggle('open');
-        if (box.classList.contains('open')) box.querySelector('textarea').focus();
-        return;
-      }
-
+      if (replyBtn) { const box = ensureReplyBox(post); box.classList.toggle('open'); if (box.classList.contains('open')) box.querySelector('textarea').focus(); return; }
       const sendBtn = e.target.closest('.ldp-send');
       if (sendBtn) {
-        const box = sendBtn.closest('.ldp-replybox');
-        const textarea = box.querySelector('textarea');
-        const raw = textarea.value.trim();
+        const box = sendBtn.closest('.ldp-replybox'), textarea = box.querySelector('textarea'), raw = textarea.value.trim();
         if (!raw) return;
         sendBtn.disabled = true; sendBtn.textContent = '发送中…';
         try {
-          const data = await apiSend(`${BASE}/posts`, 'POST', {
-            raw, topic_id: ctx.topicId,
-            reply_to_post_number: postNumber, nested_post: true,
-          });
-          box.classList.remove('open');
-          textarea.value = '';
+          const data = await apiSend(`${BASE}/posts`, 'POST', { raw, topic_id: ctx.topicId, reply_to_post_number: postNumber, nested_post: true });
+          box.classList.remove('open'); textarea.value = '';
           if (data && data.cooked) {
-            const newNode = renderPost({
-              id: data.id, post_number: data.post_number,
-              username: data.username || ME_USERNAME, name: data.name,
-              avatar_template: data.avatar_template, cooked: data.cooked,
-              created_at: data.created_at || new Date().toISOString(),
-              reply_to_post_number: postNumber, actions_summary: [],
-            }, true, ctx);
-            post.querySelector(':scope > .ldp-children').appendChild(newNode);
-            ctx.tracker.observe(newNode);
+            const newNode = renderPost({ id: data.id, post_number: data.post_number, username: data.username || ME_USERNAME, name: data.name, avatar_template: data.avatar_template, cooked: data.cooked, created_at: data.created_at || new Date().toISOString(), reply_to_post_number: postNumber, actions_summary: [] }, true, ctx);
+            post.querySelector(':scope > .ldp-children').appendChild(newNode); ctx.tracker.observe(newNode);
           }
-        } catch (err) {
-          alert('回复失败：' + err.message + '（需登录或权限不足）');
-        } finally {
-          sendBtn.disabled = false; sendBtn.textContent = '发送';
-        }
+        } catch (err) { alert('回复失败：' + err.message); } finally { sendBtn.disabled = false; sendBtn.textContent = '发送'; }
         return;
       }
     });
   }
 
-  /* ============ 10. 楼中楼按需补全（父楼进视口拉 replies.json）============ */
+  /* ============ 10. 楼中楼补全 ============ */
   function createRepliesIO(ctx) {
     const fetched = new Set();
-    const io = new IntersectionObserver((entries) => {
+    return new IntersectionObserver((entries) => {
       entries.forEach(async (en) => {
         if (!en.isIntersecting) return;
-        const postId = en.target.dataset.postId;
-        const postNumber = +en.target.dataset.postNumber;
+        const postId = en.target.dataset.postId, postNumber = +en.target.dataset.postNumber;
         if (!postId || fetched.has(postId)) return;
         fetched.add(postId);
         try {
           const replies = await fetchJSON(`${BASE}/posts/${postId}/replies.json`);
-          (replies || []).forEach((rp) => {
-            if (!rp.reply_to_post_number) rp.reply_to_post_number = postNumber;
-            attachPost(rp, ctx);
-          });
+          (replies || []).forEach((rp) => { if (!rp.reply_to_post_number) rp.reply_to_post_number = postNumber; attachPost(rp, ctx); });
           reflowPending(ctx);
-        } catch (e) { /* 忽略补全失败 */ }
+        } catch (e) {}
       });
     }, { root: ctx.scrollRoot, rootMargin: '120px', threshold: 0.1 });
-    return io;
   }
 
-  /* ============ 11. 收藏（整帖）============ */
+  /* ============ 11. 收藏 ============ */
   function bindBookmark(btn, topic) {
-    let bookmarked = !!topic.bookmarked;
-    let bookmarkId = topic.bookmark_id || null;
-    const sync = () => {
-      btn.classList.toggle('on', bookmarked);
-      btn.textContent = bookmarked ? '★ 已收藏' : '☆ 收藏本帖';
-    };
+    let bookmarked = !!topic.bookmarked, bookmarkId = topic.bookmark_id || null;
+    const sync = () => { btn.classList.toggle('on', bookmarked); btn.textContent = bookmarked ? '★ 已收藏' : '☆ 收藏本帖'; };
     sync();
-
     btn.addEventListener('click', async () => {
       btn.disabled = true;
       try {
         if (!bookmarked) {
-          const data = await apiSend(`${BASE}/bookmarks`, 'POST', {
-            bookmarkable_id: topic.id, bookmarkable_type: 'Topic',
-          });
-          bookmarkId = data && data.id ? data.id : bookmarkId;
-          bookmarked = true;
+          const data = await apiSend(`${BASE}/bookmarks`, 'POST', { bookmarkable_id: topic.id, bookmarkable_type: 'Topic' });
+          bookmarkId = data && data.id ? data.id : bookmarkId; bookmarked = true;
         } else if (bookmarkId) {
-          await apiSend(`${BASE}/bookmarks/${bookmarkId}`, 'DELETE');
-          bookmarked = false; bookmarkId = null;
-        } else {
-          await apiSend(`${BASE}/t/${topic.id}/remove_bookmarks`, 'PUT');
-          bookmarked = false;
-        }
+          await apiSend(`${BASE}/bookmarks/${bookmarkId}`, 'DELETE'); bookmarked = false; bookmarkId = null;
+        } else { await apiSend(`${BASE}/t/${topic.id}/remove_bookmarks`, 'PUT'); bookmarked = false; }
         sync();
-      } catch (err) {
-        alert('收藏操作失败：' + err.message + '（需登录或权限不足）');
-      } finally {
-        btn.disabled = false;
-      }
+      } catch (err) { alert('收藏操作失败：' + err.message); } finally { btn.disabled = false; }
     });
   }
 
-  /* 评论区标题：显示总评论数（总帖数 - 楼主帖） */
   function updateCommentsHeader(ctx) {
-    if (ctx.countEl) {
-      ctx.countEl.textContent = ctx.totalComments ? `（${ctx.totalComments}）` : '';
-    }
+    if (ctx.countEl) ctx.countEl.textContent = ctx.totalComments ? `（${ctx.totalComments}）` : '';
     if (ctx.emptyEl) ctx.emptyEl.style.display = ctx.totalComments ? 'none' : '';
   }
 
-  /* ============ 12. 弹窗主体 + 哨兵加载 ============ */
-  let CURRENT_OVERLAY = null; // 弹窗单例
+  /* 骨架屏 HTML（body 内容部分） */
+  const SKELETON_HTML = `
+    <div class="ldp-sk-head">
+      <div class="ldp-sk ldp-sk-avatar"></div>
+      <div class="ldp-sk ldp-sk-line ldp-sk-w40"></div>
+    </div>
+    <div class="ldp-sk-para">
+      <div class="ldp-sk ldp-sk-line ldp-sk-w100"></div>
+      <div class="ldp-sk ldp-sk-line ldp-sk-w90"></div>
+      <div class="ldp-sk ldp-sk-line ldp-sk-w80"></div>
+      <div class="ldp-sk ldp-sk-line ldp-sk-w60"></div>
+    </div>
+    <div class="ldp-sk-divider"></div>
+    <div class="ldp-sk-comment">
+      <div class="ldp-sk ldp-sk-avatar"></div>
+      <div class="ldp-sk-cbody ldp-sk-para">
+        <div class="ldp-sk ldp-sk-line ldp-sk-w30"></div>
+        <div class="ldp-sk ldp-sk-line ldp-sk-w90"></div>
+        <div class="ldp-sk ldp-sk-line ldp-sk-w60"></div>
+      </div>
+    </div>
+    <div class="ldp-sk-comment">
+      <div class="ldp-sk ldp-sk-avatar"></div>
+      <div class="ldp-sk-cbody ldp-sk-para">
+        <div class="ldp-sk ldp-sk-line ldp-sk-w40"></div>
+        <div class="ldp-sk ldp-sk-line ldp-sk-w100"></div>
+        <div class="ldp-sk ldp-sk-line ldp-sk-w80"></div>
+      </div>
+    </div>
+    <div class="ldp-sk-comment">
+      <div class="ldp-sk ldp-sk-avatar"></div>
+      <div class="ldp-sk-cbody ldp-sk-para">
+        <div class="ldp-sk ldp-sk-line ldp-sk-w30"></div>
+        <div class="ldp-sk ldp-sk-line ldp-sk-w90"></div>
+      </div>
+    </div>`;
 
-  async function openModal(topicId, titleHint) {
+  /* ============ 12. 弹窗主体 + 循环泵加载 ============ */
+  let CURRENT_OVERLAY = null;
+
+  async function openModal(topicId) {
     if (CURRENT_OVERLAY) { CURRENT_OVERLAY.remove(); CURRENT_OVERLAY = null; }
-
     const overlay = document.createElement('div');
     overlay.className = 'ldp-overlay';
     overlay.innerHTML = `
       <div class="ldp-modal">
         <div class="ldp-header">
           <div style="flex:1">
-            <h2 class="ldp-title">${esc(titleHint || '加载中…')}</h2>
-            <div class="ldp-meta"></div>
+            <h2 class="ldp-title"><span class="ldp-sk ldp-sk-title"></span></h2>
+            <div class="ldp-meta"><span class="ldp-sk ldp-sk-meta"></span></div>
           </div>
           <div class="ldp-head-btns">
             <button class="ldp-bookmark" hidden>☆ 收藏本帖</button>
@@ -611,128 +601,96 @@
         <div class="ldp-body">
           <div class="ldp-topic"></div>
           <div class="ldp-comments-header">评论<span class="ldp-comments-count"></span></div>
-          <div class="ldp-comments">
-            <div class="ldp-comments-empty">暂无评论</div>
-          </div>
+          <div class="ldp-comments"><div class="ldp-comments-empty">暂无评论</div></div>
           <div class="ldp-sentinel"></div>
-          <div class="ldp-loadmask">
-            <div class="ldp-spinner"></div>
-            <div class="ldp-loadmask-text">正在加载帖子…</div>
-          </div>
+          <div class="ldp-loadmask">${SKELETON_HTML}</div>
         </div>
       </div>`;
     document.body.appendChild(overlay);
     CURRENT_OVERLAY = overlay;
 
-    const modal = overlay.querySelector('.ldp-modal');
-    const body = overlay.querySelector('.ldp-body');
-    const topicEl = overlay.querySelector('.ldp-topic');
-    const commentsEl = overlay.querySelector('.ldp-comments');
-    const countEl = overlay.querySelector('.ldp-comments-count');
-    const emptyEl = overlay.querySelector('.ldp-comments-empty');
-    const sentinel = overlay.querySelector('.ldp-sentinel');
-    const maskEl = overlay.querySelector('.ldp-loadmask');
+    const modal = overlay.querySelector('.ldp-modal'), body = overlay.querySelector('.ldp-body');
+    const topicEl = overlay.querySelector('.ldp-topic'), commentsEl = overlay.querySelector('.ldp-comments');
+    const countEl = overlay.querySelector('.ldp-comments-count'), emptyEl = overlay.querySelector('.ldp-comments-empty');
+    const sentinel = overlay.querySelector('.ldp-sentinel'), maskEl = overlay.querySelector('.ldp-loadmask');
 
-    const loader = createLoader(topicId);
-    const tracker = createReadTracker(topicId, body);
-
-    const ctx = {
-      topicId, op: null,
-      topicEl, commentsEl, countEl, emptyEl, scrollRoot: body,
-      nodeMap: new Map(), pending: [], tracker,
-      totalComments: 0, repliesIO: null,
-    };
+    const loader = createLoader(topicId), tracker = createReadTracker(topicId, body);
+    const ctx = { topicId, op: null, topicEl, commentsEl, countEl, emptyEl, scrollRoot: body, nodeMap: new Map(), pending: [], tracker, totalComments: 0, repliesIO: null };
     ctx.repliesIO = createRepliesIO(ctx);
 
-    let loading = false, done = false;
+    let loading = false, done = false, pendingRetry = false;
 
-    const close = () => {
-      tracker.stop();
-      ctx.repliesIO.disconnect();
-      overlay.remove();
-      if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null;
-      document.removeEventListener('keydown', onEsc);
-    };
+    const close = () => { tracker.stop(); ctx.repliesIO.disconnect(); overlay.remove(); if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null; document.removeEventListener('keydown', onEsc); };
     function onEsc(e) { if (e.key === 'Escape') close(); }
     overlay.querySelector('.ldp-close').addEventListener('click', close);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     document.addEventListener('keydown', onEsc);
 
+    const sentinelVisible = () => { const br = body.getBoundingClientRect(), sr = sentinel.getBoundingClientRect(); return sr.top <= br.bottom + 300; };
+
+    const pump = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        while (!done && (sentinelVisible() || pendingRetry)) {
+          pendingRetry = false;
+          const { posts, done: isDone, retry } = await loader.next();
+          posts.forEach((p) => attachPost(p, ctx));
+          reflowPending(ctx);
+          if (retry) {
+            pendingRetry = true;
+            await new Promise((r) => setTimeout(r, 400));
+            continue;
+          }
+          done = isDone;
+        }
+        if (done && !overlay.querySelector('.ldp-link-open')) {
+          const link = document.createElement('a');
+          link.className = 'ldp-link-open'; link.href = `${BASE}/t/${topicId}`; link.target = '_blank';
+          link.textContent = '已到底 · 在新标签页打开原帖 →';
+          body.insertBefore(link, sentinel);
+        }
+      } catch (e) {} finally { loading = false; }
+    };
+
     try {
       const topic = await loader.init();
-      ctx.op = topic._opUsername;
-      ctx.totalComments = Math.max(0, (topic.posts_count || 1) - 1); // 总评论数
+      ctx.op = topic._opUsername; ctx.totalComments = Math.max(0, (topic.posts_count || 1) - 1);
       overlay.querySelector('.ldp-title').textContent = topic.title;
-      overlay.querySelector('.ldp-meta').textContent =
-          `${topic.posts_count} 帖 · ${topic.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
-      updateCommentsHeader(ctx); // 立即显示总评论数与空态
+      overlay.querySelector('.ldp-meta').textContent = `${topic.posts_count} 帖 · ${topic.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
+      updateCommentsHeader(ctx);
 
       const openBtn = overlay.querySelector('.ldp-open');
-      openBtn.href = `${BASE}/t/${topic.id}`;
-      openBtn.hidden = false;
-
+      openBtn.href = `${BASE}/t/${topic.id}`; openBtn.hidden = false;
       const bmBtn = overlay.querySelector('.ldp-bookmark');
-      bmBtn.hidden = false;
-      bindBookmark(bmBtn, topic);
+      bmBtn.hidden = false; bindBookmark(bmBtn, topic);
 
       bindActions(modal, ctx);
       tracker.start();
 
-      const loadMore = async () => {
-        if (loading || done) return;
-        loading = true;
-        const tip = document.createElement('div');
-        tip.className = 'ldp-loadmore'; tip.textContent = '加载中…';
-        body.insertBefore(tip, sentinel);
-        try {
-          const { posts, done: isDone } = await loader.next();
-          posts.forEach((p) => attachPost(p, ctx));
-          reflowPending(ctx);
-          tip.remove();
-          done = isDone;
-          if (done) {
-            const link = document.createElement('a');
-            link.className = 'ldp-link-open';
-            link.href = `${BASE}/t/${topic.id}`; link.target = '_blank';
-            link.textContent = '已到底 · 在新标签页打开原帖 →';
-            body.insertBefore(link, sentinel);
-          }
-        } catch (e) {
-          tip.textContent = '加载失败，滚动重试';
-        } finally {
-          loading = false;
-        }
-      };
-
-      // 哨兵触底加载
-      const sentinelIO = new IntersectionObserver((entries) => {
-        if (entries.some((en) => en.isIntersecting)) loadMore();
-      }, { root: body, rootMargin: '200px' });
+      const sentinelIO = new IntersectionObserver((entries) => { if (entries.some((en) => en.isIntersecting)) pump(); }, { root: body, rootMargin: '300px' });
       sentinelIO.observe(sentinel);
+      body.addEventListener('scroll', () => { if (sentinelVisible()) pump(); }, { passive: true });
 
-      await loadMore();
-      if (!done && body.scrollHeight <= body.clientHeight) await loadMore();
-
-      // 首屏就绪，淡出加载遮罩
+      await pump();
       maskEl.classList.add('hide');
       setTimeout(() => maskEl.remove(), 300);
     } catch (err) {
       if (maskEl) maskEl.remove();
-      body.innerHTML = `<div class="ldp-error">加载失败：${esc(err.message)}（可能需要登录或帖子受限）</div>`;
+      body.innerHTML = `<div class="ldp-error">加载失败：${esc(err.message)}</div>`;
     }
   }
 
-  /* ============ 13. 拦截标题点击（含用户菜单/通知面板）============ */
+  /* ============ 13. 拦截标题点击 ============ */
   document.addEventListener('click', function (e) {
-    const a = e.target.closest('a.title, a.raw-topic-link, a[href*="/t/"]');
+    const a = e.target.closest('a.title, a.raw-topic-link, a.search-link, a.search-result-topic, a[href*="/t/"]');
     if (!a || a.classList.contains('ldp-link-open') || a.classList.contains('ldp-open')) return;
-    const inMenu = !!a.closest(MENU_PANEL_SEL);
-    const isTitle = a.classList.contains('title') || a.classList.contains('raw-topic-link');
-    if (!isTitle && !inMenu) return;
+    const inMenu = !!a.closest(MENU_PANEL_SEL), inSearch = !!a.closest(SEARCH_SEL);
+    const isTitle = a.classList.contains('title') || a.classList.contains('raw-topic-link') || a.classList.contains('search-link') || a.classList.contains('search-result-topic');
+    if (!isTitle && !inMenu && !inSearch) return;
     const m = (a.getAttribute('href') || '').match(/\/t\/(?:[^\/]+\/)?(\d+)/);
     if (!m) return;
-    e.preventDefault();
-    e.stopPropagation();
-    openModal(m[1], a.textContent.trim());
+    e.preventDefault(); e.stopPropagation();
+    openModal(m[1]);
   }, true);
 })();
