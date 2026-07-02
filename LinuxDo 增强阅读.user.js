@@ -308,7 +308,7 @@
     };
   }
 
-  /* ============ 5. 分块加载（含 track_visit 访问登记 + 重试保护） ============ */
+  /* ============ 5. 分块加载（init 带 Discourse 浏览追踪头 + 重试保护） ============ */
   function createLoader(topicId) {
     let stream = [];
     const cache = new Map();
@@ -318,8 +318,21 @@
 
     async function init() {
       await ensureMe();
-      // track_visit=true 让服务端登记本次访问，计入“浏览的话题”统计
-      const data = await fetchJSON(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`);
+      // 关键：带上 Discourse 浏览追踪头 + no-store，让服务端把本次当作真实话题浏览登记，计入“浏览的话题”统计
+      const res = await fetch(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Discourse-Present': 'true',
+          'Discourse-Track-View': 'true',
+          'Discourse-Track-View-Topic-Id': String(topicId),
+        },
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
       topic = data;
       stream = data.post_stream.stream || [];
       data.post_stream.posts.forEach((p) => cache.set(p.id, p));
