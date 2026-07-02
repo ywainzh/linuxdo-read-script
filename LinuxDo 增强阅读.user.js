@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.0.3
+// @version      1.0.4
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -21,6 +21,13 @@
   const READ_THRESHOLD = 1500;
   const FLUSH_INTERVAL = 5000;
   let ME_USERNAME = null;
+
+  // --- 楼中楼分批加载 & 请求节流 相关配置（新增） ---
+  const SUB_REPLY_INITIAL_SIZE = 3;   // 楼中楼默认展示条数
+  const SUB_REPLY_PAGE_SIZE = 10;     // 每次点击“展示更多”追加条数
+  const REPLIES_FETCH_MIN_INTERVAL = 300; // 楼中楼接口请求最小间隔(ms)
+  const REPLIES_HOVER_DELAY = 400;    // 楼层在视口停留超过此时长才触发抓取(ms)
+  let lastRepliesFetchTime = 0; // 楼中楼请求节流用的时间戳
 
   const MENU_PANEL_SEL = '.menu-panel, .user-menu, .quick-access-panel, .notifications';
   const SEARCH_SEL = '.search-results, .fps-result, .search-menu, .search-menu-container, .search-result-topic';
@@ -135,6 +142,14 @@
       box-shadow:0 10px 40px rgba(0,0,0,.6);}
     .ldp-lb-x{position:fixed;top:14px;right:18px;z-index:1;cursor:pointer;border:none;
       background:transparent;color:#fff;font-size:30px;line-height:1;}
+
+    /* 楼中楼“展示更多回复”按钮（新增） */
+    .ldp-sub-actions{margin-left:22px;padding-left:14px;margin-top:2px;display:none;}
+    .ldp-load-more-replies{font-size:12px;color:var(--tertiary,#08c);font-weight:600;
+      opacity:.9;padding:4px 0;}
+    .ldp-load-more-replies:hover{opacity:1;text-decoration:underline;}
+    .ldp-sub-loading{font-size:12px;opacity:.5;margin-left:22px;padding-left:14px;
+      margin-top:2px;display:none;}
   `;
   document.head.appendChild(style);
 
@@ -166,6 +181,15 @@
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
+  }
+
+  // 新增：专用于楼中楼 replies 接口的节流请求，与其它接口的 fetchJSON 互不影响
+  async function fetchRepliesThrottled(url) {
+    const now = Date.now();
+    const wait = REPLIES_FETCH_MIN_INTERVAL - (now - lastRepliesFetchTime);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastRepliesFetchTime = Date.now();
+    return fetchJSON(url);
   }
 
   async function apiSend(url, method, params, extraHeaders) {
@@ -318,7 +342,6 @@
 
     async function init() {
       await ensureMe();
-      // 关键：带上 Discourse 浏览追踪头 + no-store，让服务端把本次当作真实话题浏览登记，计入“浏览的话题”统计
       const res = await fetch(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`, {
         method: 'GET',
         credentials: 'include',
@@ -401,7 +424,8 @@
       ctx.commentsEl.appendChild(node);
     }
     ctx.tracker.observe(node);
-    ctx.repliesIO.observe(node);
+    // 仅当该楼层确实存在回复时才纳入楼中楼观察队列（新增判断，减少无意义的 IO 开销）
+    if (p.reply_count > 0) ctx.repliesIO.observe(node);
   }
 
   function reflowPending(ctx) {
@@ -451,6 +475,8 @@
         <button class="ldp-btn ldp-replybtn">↩ 回复</button>
       </div>
       <div class="ldp-children"></div>
+      <div class="ldp-sub-loading">加载楼中楼中…</div>
+      <div class="ldp-sub-actions"><button class="ldp-btn ldp-load-more-replies">展示更多回复 ↓</button></div>
     `;
     return node;
   }
@@ -467,11 +493,49 @@
     return box;
   }
 
-  /* ============ 9. 事件委托 ============ */
+  /* ============ 9. 楼中楼分批渲染（新增） ============ */
+  function renderSubReplyBatch(postNumber, ctx) {
+    const state = ctx.subReplyState.get(postNumber);
+    const parentNode = ctx.nodeMap.get(postNumber) ||
+        (ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`));
+    if (!state || !parentNode) return;
+
+    const start = state.renderedCount;
+    const limit = start === 0 ? SUB_REPLY_INITIAL_SIZE : SUB_REPLY_PAGE_SIZE;
+    const batch = state.all.slice(start, start + limit);
+
+    batch.forEach((rp) => {
+      if (!rp.reply_to_post_number) rp.reply_to_post_number = postNumber;
+      attachPost(rp, ctx);
+    });
+    state.renderedCount += batch.length;
+    reflowPending(ctx);
+
+    const actionEl = parentNode.querySelector(':scope > .ldp-sub-actions');
+    const btnEl = actionEl && actionEl.querySelector('.ldp-load-more-replies');
+    const remaining = state.all.length - state.renderedCount;
+    if (remaining > 0) {
+      if (actionEl) actionEl.style.display = 'block';
+      if (btnEl) btnEl.textContent = `展示更多回复（还剩 ${remaining} 条） ↓`;
+    } else if (actionEl) {
+      actionEl.style.display = 'none';
+    }
+  }
+
+  /* ============ 10. 事件委托 ============ */
   function bindActions(modal, ctx) {
     modal.addEventListener('click', async (e) => {
       const img = e.target.closest('.ldp-content img');
       if (img) { e.preventDefault(); e.stopPropagation(); openLightbox(resolveOriginalSrc(img)); return; }
+
+      // 楼中楼“展示更多回复”按钮（新增）
+      const moreBtn = e.target.closest('.ldp-load-more-replies');
+      if (moreBtn) {
+        const post = moreBtn.closest('.ldp-post');
+        renderSubReplyBatch(+post.dataset.postNumber, ctx);
+        return;
+      }
+
       const post = e.target.closest('.ldp-post');
       if (!post) return;
       const postId = post.dataset.postId, postNumber = +post.dataset.postNumber;
@@ -512,25 +576,49 @@
     });
   }
 
-  /* ============ 10. 楼中楼补全 ============ */
+  /* ============ 11. 楼中楼补全（重构：分批渲染 + 节流 + 停顿检测） ============ */
   function createRepliesIO(ctx) {
     const fetched = new Set();
+    const hoverTimers = new Map();
+
     return new IntersectionObserver((entries) => {
-      entries.forEach(async (en) => {
-        if (!en.isIntersecting) return;
-        const postId = en.target.dataset.postId, postNumber = +en.target.dataset.postNumber;
-        if (!postId || fetched.has(postId)) return;
-        fetched.add(postId);
-        try {
-          const replies = await fetchJSON(`${BASE}/posts/${postId}/replies.json`);
-          (replies || []).forEach((rp) => { if (!rp.reply_to_post_number) rp.reply_to_post_number = postNumber; attachPost(rp, ctx); });
-          reflowPending(ctx);
-        } catch (e) {}
+      entries.forEach((en) => {
+        const postId = en.target.dataset.postId;
+        const postNumber = +en.target.dataset.postNumber;
+        if (!postId) return;
+
+        if (en.isIntersecting) {
+          if (fetched.has(postId) || hoverTimers.has(postId)) return;
+          // 停顿检测：楼层需在视口停留 REPLIES_HOVER_DELAY 才真正发起请求，快速划过则不触发
+          const timer = setTimeout(async () => {
+            hoverTimers.delete(postId);
+            fetched.add(postId);
+            const loadingEl = en.target.querySelector(':scope > .ldp-sub-loading');
+            if (loadingEl) loadingEl.style.display = 'block';
+            try {
+              const replies = await fetchRepliesThrottled(`${BASE}/posts/${postId}/replies.json`);
+              if (loadingEl) loadingEl.style.display = 'none';
+              if (!replies || !replies.length) return;
+              ctx.subReplyState.set(postNumber, { all: replies, renderedCount: 0 });
+              renderSubReplyBatch(postNumber, ctx); // 首批只渲染 SUB_REPLY_INITIAL_SIZE 条
+            } catch (e) {
+              if (loadingEl) loadingEl.style.display = 'none';
+              fetched.delete(postId); // 失败允许下次进入视口重试
+            }
+          }, REPLIES_HOVER_DELAY);
+          hoverTimers.set(postId, timer);
+        } else {
+          // 离开视口时若尚未真正发起请求，则取消该次触发
+          if (hoverTimers.has(postId)) {
+            clearTimeout(hoverTimers.get(postId));
+            hoverTimers.delete(postId);
+          }
+        }
       });
     }, { root: ctx.scrollRoot, rootMargin: '120px', threshold: 0.1 });
   }
 
-  /* ============ 11. 收藏 ============ */
+  /* ============ 12. 收藏 ============ */
   function bindBookmark(btn, topic) {
     let bookmarked = !!topic.bookmarked, bookmarkId = topic.bookmark_id || null;
     const sync = () => { btn.classList.toggle('on', bookmarked); btn.textContent = bookmarked ? '★ 已收藏' : '☆ 收藏本帖'; };
@@ -591,7 +679,7 @@
       </div>
     </div>`;
 
-  /* ============ 12. 弹窗主体 + 循环泵加载 ============ */
+  /* ============ 13. 弹窗主体 + 循环泵加载 ============ */
   let CURRENT_OVERLAY = null;
 
   async function openModal(topicId) {
@@ -628,7 +716,11 @@
     const sentinel = overlay.querySelector('.ldp-sentinel'), maskEl = overlay.querySelector('.ldp-loadmask');
 
     const loader = createLoader(topicId), tracker = createReadTracker(topicId, body);
-    const ctx = { topicId, op: null, topicEl, commentsEl, countEl, emptyEl, scrollRoot: body, nodeMap: new Map(), pending: [], tracker, totalComments: 0, repliesIO: null };
+    const ctx = {
+      topicId, op: null, topicEl, commentsEl, countEl, emptyEl, scrollRoot: body,
+      nodeMap: new Map(), pending: [], tracker, totalComments: 0, repliesIO: null,
+      subReplyState: new Map(), // 新增：楼中楼原始数据 + 已渲染数量的状态表
+    };
     ctx.repliesIO = createRepliesIO(ctx);
 
     let loading = false, done = false, pendingRetry = false;
@@ -694,7 +786,7 @@
     }
   }
 
-  /* ============ 13. 拦截标题点击 ============ */
+  /* ============ 14. 拦截标题点击 ============ */
   document.addEventListener('click', function (e) {
     const a = e.target.closest('a.title, a.raw-topic-link, a.search-link, a.search-result-topic, a[href*="/t/"]');
     if (!a || a.classList.contains('ldp-link-open') || a.classList.contains('ldp-open')) return;
