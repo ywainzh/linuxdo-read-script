@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.0.4
+// @version      1.0.5
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -22,7 +22,7 @@
   const FLUSH_INTERVAL = 5000;
   let ME_USERNAME = null;
 
-  // --- 楼中楼分批加载 & 请求节流 相关配置（新增） ---
+  // --- 楼中楼分批加载 & 请求节流 相关配置 ---
   const SUB_REPLY_INITIAL_SIZE = 3;   // 楼中楼默认展示条数
   const SUB_REPLY_PAGE_SIZE = 10;     // 每次点击“展示更多”追加条数
   const REPLIES_FETCH_MIN_INTERVAL = 300; // 楼中楼接口请求最小间隔(ms)
@@ -143,13 +143,21 @@
     .ldp-lb-x{position:fixed;top:14px;right:18px;z-index:1;cursor:pointer;border:none;
       background:transparent;color:#fff;font-size:30px;line-height:1;}
 
-    /* 楼中楼“展示更多回复”按钮（新增） */
+    /* 楼中楼“展示更多回复”按钮 */
     .ldp-sub-actions{margin-left:22px;padding-left:14px;margin-top:2px;display:none;}
     .ldp-load-more-replies{font-size:12px;color:var(--tertiary,#08c);font-weight:600;
       opacity:.9;padding:4px 0;}
     .ldp-load-more-replies:hover{opacity:1;text-decoration:underline;}
     .ldp-sub-loading{font-size:12px;opacity:.5;margin-left:22px;padding-left:14px;
       margin-top:2px;display:none;}
+
+    /* 下拉加载评论时的底部加载提示 */
+    .ldp-loading-tip{padding:14px 0;text-align:center;font-size:13px;
+      color:var(--primary-medium,#888);display:none;user-select:none;}
+    .ldp-loading-tip.show{display:block;}
+    .ldp-loading-tip .ldp-tip-icon{display:inline-block;margin-right:6px;
+      animation:ldp-spin .9s linear infinite;}
+    @keyframes ldp-spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
   `;
   document.head.appendChild(style);
 
@@ -183,7 +191,7 @@
     return res.json();
   }
 
-  // 新增：专用于楼中楼 replies 接口的节流请求，与其它接口的 fetchJSON 互不影响
+  // 专用于楼中楼 replies 接口的节流请求，与其它接口的 fetchJSON 互不影响
   async function fetchRepliesThrottled(url) {
     const now = Date.now();
     const wait = REPLIES_FETCH_MIN_INTERVAL - (now - lastRepliesFetchTime);
@@ -424,7 +432,7 @@
       ctx.commentsEl.appendChild(node);
     }
     ctx.tracker.observe(node);
-    // 仅当该楼层确实存在回复时才纳入楼中楼观察队列（新增判断，减少无意义的 IO 开销）
+    // 仅当该楼层确实存在回复时才纳入楼中楼观察队列（减少无意义的 IO 开销）
     if (p.reply_count > 0) ctx.repliesIO.observe(node);
   }
 
@@ -493,7 +501,7 @@
     return box;
   }
 
-  /* ============ 9. 楼中楼分批渲染（新增） ============ */
+  /* ============ 9. 楼中楼分批渲染 ============ */
   function renderSubReplyBatch(postNumber, ctx) {
     const state = ctx.subReplyState.get(postNumber);
     const parentNode = ctx.nodeMap.get(postNumber) ||
@@ -528,7 +536,7 @@
       const img = e.target.closest('.ldp-content img');
       if (img) { e.preventDefault(); e.stopPropagation(); openLightbox(resolveOriginalSrc(img)); return; }
 
-      // 楼中楼“展示更多回复”按钮（新增）
+      // 楼中楼“展示更多回复”按钮
       const moreBtn = e.target.closest('.ldp-load-more-replies');
       if (moreBtn) {
         const post = moreBtn.closest('.ldp-post');
@@ -576,7 +584,7 @@
     });
   }
 
-  /* ============ 11. 楼中楼补全（重构：分批渲染 + 节流 + 停顿检测） ============ */
+  /* ============ 11. 楼中楼补全（分批渲染 + 节流 + 停顿检测） ============ */
   function createRepliesIO(ctx) {
     const fetched = new Set();
     const hoverTimers = new Map();
@@ -703,6 +711,7 @@
           <div class="ldp-topic"></div>
           <div class="ldp-comments-header">评论<span class="ldp-comments-count"></span></div>
           <div class="ldp-comments"><div class="ldp-comments-empty">暂无评论</div></div>
+          <div class="ldp-loading-tip"><span class="ldp-tip-icon">⌛</span>正在加载评论…</div>
           <div class="ldp-sentinel"></div>
           <div class="ldp-loadmask">${SKELETON_HTML}</div>
         </div>
@@ -714,12 +723,13 @@
     const topicEl = overlay.querySelector('.ldp-topic'), commentsEl = overlay.querySelector('.ldp-comments');
     const countEl = overlay.querySelector('.ldp-comments-count'), emptyEl = overlay.querySelector('.ldp-comments-empty');
     const sentinel = overlay.querySelector('.ldp-sentinel'), maskEl = overlay.querySelector('.ldp-loadmask');
+    const loadingTip = overlay.querySelector('.ldp-loading-tip');
 
     const loader = createLoader(topicId), tracker = createReadTracker(topicId, body);
     const ctx = {
       topicId, op: null, topicEl, commentsEl, countEl, emptyEl, scrollRoot: body,
       nodeMap: new Map(), pending: [], tracker, totalComments: 0, repliesIO: null,
-      subReplyState: new Map(), // 新增：楼中楼原始数据 + 已渲染数量的状态表
+      subReplyState: new Map(), // 楼中楼原始数据 + 已渲染数量的状态表
     };
     ctx.repliesIO = createRepliesIO(ctx);
 
@@ -736,6 +746,8 @@
     const pump = async () => {
       if (loading) return;
       loading = true;
+      // 只要还没加载完，进入循环前先亮出底部提示
+      if (!done) loadingTip.classList.add('show');
       try {
         while (!done && (sentinelVisible() || pendingRetry)) {
           pendingRetry = false;
@@ -755,7 +767,11 @@
           link.textContent = '已到底 · 在新标签页打开原帖 →';
           body.insertBefore(link, sentinel);
         }
-      } catch (e) {} finally { loading = false; }
+      } catch (e) {} finally {
+        loading = false;
+        // 本轮抓取结束（无论成功、失败或已到底）都收起提示
+        loadingTip.classList.remove('show');
+      }
     };
 
     try {
