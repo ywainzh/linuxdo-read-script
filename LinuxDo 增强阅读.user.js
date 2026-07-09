@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.0.5
+// @version      1.0.6
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -9,8 +9,6 @@
 // @icon         https://cdn3.ldstatic.com/optimized/4X/6/a/6/6a6affc7b1ce8140279e959d32671304db06d5ab_2_180x180.png
 // @grant        none
 // @run-at       document-idle
-// @downloadURL https://update.greasyfork.org/scripts/584412/LinuxDo%20%E5%A2%9E%E5%BC%BA%E9%98%85%E8%AF%BB.user.js
-// @updateURL https://update.greasyfork.org/scripts/584412/LinuxDo%20%E5%A2%9E%E5%BC%BA%E9%98%85%E8%AF%BB.meta.js
 // ==/UserScript==
 
 (function () {
@@ -101,6 +99,11 @@
     .ldp-comments-empty{padding:18px 0;text-align:center;opacity:.5;font-size:13px;}
 
     .ldp-post{padding:12px 0;border-bottom:1px solid var(--primary-low,#eee);}
+    .ldp-post.ldp-flash{animation:ldp-flash-bg 1.6s ease;}
+    @keyframes ldp-flash-bg{
+      0%{background:rgba(8,132,255,.16);}
+      100%{background:transparent;}
+    }
     .ldp-post-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
     .ldp-avatar{width:28px;height:28px;border-radius:50%;}
     .ldp-author{font-weight:600;}
@@ -123,16 +126,27 @@
     .ldp-btn:hover{opacity:1;}
     .ldp-btn:disabled{cursor:default;opacity:.4;}
     .ldp-like.liked{color:var(--love,#e25822);opacity:1;font-weight:600;}
-    .ldp-replybox{margin-top:8px;}
-    .ldp-replybox textarea{width:100%;min-height:70px;box-sizing:border-box;
+    
+    .ldp-replybox{margin-top:8px;display:none;position:relative;}
+    .ldp-replybox.open{display:block;}
+    .ldp-replybox textarea{width:100%;min-height:90px;box-sizing:border-box;
       border:1px solid var(--primary-low,#ccc);border-radius:6px;padding:8px;
       font:inherit;background:var(--secondary,#fff);color:inherit;resize:vertical;}
+    .ldp-replybox textarea.uploading{opacity:0.6;pointer-events:none;}
     .ldp-send{margin-top:6px;background:var(--tertiary,#08c);color:#fff;border:none;
       border-radius:6px;padding:6px 14px;cursor:pointer;}
-    .ldp-loadmore,.ldp-error{padding:24px;text-align:center;opacity:.7;}
-    .ldp-link-open{margin-top:10px;display:inline-block;font-size:12px;}
-    .ldp-sentinel{height:1px;}
-    /* 单图灯箱 */
+    .ldp-reply-tip{margin-left:10px;font-size:12px;color:#3ea66b;opacity:0;
+      transition:opacity .25s ease;}
+    .ldp-reply-tip.show{opacity:1;}
+    
+    .ldp-loading-tip{padding:14px 0;text-align:center;font-size:13px;
+      color:var(--primary-medium,#888);display:none;user-select:none;}
+    .ldp-loading-tip.show{display:block;}
+    .ldp-loading-tip .ldp-tip-icon{display:inline-block;margin-right:6px;
+      animation:ldp-spin .9s linear infinite;}
+    @keyframes ldp-spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+
+    /* 灯箱 */
     .ldp-lightbox{position:fixed;inset:0;z-index:2147483600;display:flex;
       flex-direction:column;background:rgba(0,0,0,.9);}
     .ldp-lb-stage{flex:1;overflow:auto;display:flex;align-items:center;
@@ -210,7 +224,9 @@
         'X-Requested-With': 'XMLHttpRequest',
       }, extraHeaders || {}),
     };
-    if (params) {
+    if (params instanceof FormData) {
+      opt.body = params;
+    } else if (params) {
       opt.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
       opt.body = new URLSearchParams(params).toString();
     }
@@ -340,7 +356,7 @@
     };
   }
 
-  /* ============ 5. 分块加载（init 带 Discourse 浏览追踪头 + 重试保护） ============ */
+  /* ============ 5. 加载器 ============ */
   function createLoader(topicId) {
     let stream = [];
     const cache = new Map();
@@ -496,16 +512,73 @@
     const username = (post.querySelector(':scope > .ldp-post-head .ldp-user')?.textContent || '').replace(/^@/, '');
     box = document.createElement('div');
     box.className = 'ldp-replybox';
-    box.innerHTML = `<textarea placeholder="回复 @${esc(username)} …"></textarea><button class="ldp-send">发送</button>`;
-    post.insertBefore(box, post.querySelector(':scope > .ldp-children'));
+    box.innerHTML = `<textarea placeholder="回复 @${esc(username)} … (支持直接粘贴图片)"></textarea><button class="ldp-send">发送</button><span class="ldp-reply-tip">✓ 已发送</span>`;
+
+    const textarea = box.querySelector('textarea');
+    bindPasteEvent(textarea); // 绑定粘贴事件
+
+    const actions = post.querySelector(':scope > .ldp-actions');
+    if (actions) actions.after(box);
+    else post.appendChild(box);
     return box;
+  }
+
+  /* ============ 图片粘贴上传逻辑 ============ */
+  async function uploadImage(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('type', 'composer');
+    formData.append('synchronous', 'true');
+
+    return apiSend(`${BASE}/uploads.json`, 'POST', formData);
+  }
+
+  function insertAtCursor(textarea, text) {
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const val = textarea.value;
+    textarea.value = val.substring(0, start) + text + val.substring(end);
+    textarea.selectionStart = textarea.selectionEnd = start + text.length;
+    textarea.focus();
+  }
+
+  function bindPasteEvent(textarea) {
+    textarea.addEventListener('paste', async (e) => {
+      const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+      for (const item of items) {
+        if (item.type.indexOf('image') !== -1) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (!file) continue;
+
+          const originalPlaceholder = `\n[正在上传图片 ${file.name} ...]\n`;
+          insertAtCursor(textarea, originalPlaceholder);
+          textarea.classList.add('uploading');
+
+          try {
+            const res = await uploadImage(file);
+            if (res && res.short_url) {
+              // Discourse 返回的 short_url 通常是 upload://xxx 格式
+              // 构造 Markdown 引用
+              const markdown = `\n![${res.original_filename}|${res.width}x${res.height}](${res.short_url})\n`;
+              textarea.value = textarea.value.replace(originalPlaceholder, markdown);
+            } else {
+              throw new Error('上传返回数据异常');
+            }
+          } catch (err) {
+            textarea.value = textarea.value.replace(originalPlaceholder, `\n[图片上传失败: ${err.message}]\n`);
+          } finally {
+            textarea.classList.remove('uploading');
+          }
+        }
+      }
+    });
   }
 
   /* ============ 9. 楼中楼分批渲染 ============ */
   function renderSubReplyBatch(postNumber, ctx) {
     const state = ctx.subReplyState.get(postNumber);
-    const parentNode = ctx.nodeMap.get(postNumber) ||
-        (ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`));
+    const parentNode = ctx.nodeMap.get(postNumber) || (ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`));
     if (!state || !parentNode) return;
 
     const start = state.renderedCount;
@@ -544,9 +617,10 @@
         return;
       }
 
-      const post = e.target.closest('.ldp-post');
-      if (!post) return;
-      const postId = post.dataset.postId, postNumber = +post.dataset.postNumber;
+      const postNode = e.target.closest('.ldp-post');
+      if (!postNode) return;
+      const postId = postNode.dataset.postId, postNumber = +postNode.dataset.postNumber;
+
       const likeBtn = e.target.closest('.ldp-like');
       if (likeBtn && !likeBtn.disabled) {
         const countEl = likeBtn.querySelector('.ldp-like-count'), acted = likeBtn.dataset.acted === '1';
@@ -564,21 +638,73 @@
         } catch (err) { alert('操作失败：' + err.message); } finally { likeBtn.disabled = false; }
         return;
       }
+
       const replyBtn = e.target.closest('.ldp-replybtn');
-      if (replyBtn) { const box = ensureReplyBox(post); box.classList.toggle('open'); if (box.classList.contains('open')) box.querySelector('textarea').focus(); return; }
+      if (replyBtn) {
+        const box = ensureReplyBox(postNode);
+        box.classList.toggle('open');
+        if (box.classList.contains('open')) box.querySelector('textarea').focus();
+        return;
+      }
+
+      // 发送回复
       const sendBtn = e.target.closest('.ldp-send');
       if (sendBtn) {
-        const box = sendBtn.closest('.ldp-replybox'), textarea = box.querySelector('textarea'), raw = textarea.value.trim();
+        const box = sendBtn.closest('.ldp-replybox'),
+            textarea = box.querySelector('textarea'),
+            raw = textarea.value.trim();
         if (!raw) return;
-        sendBtn.disabled = true; sendBtn.textContent = '发送中…';
+
+        sendBtn.disabled = true;
+        sendBtn.textContent = '发送中…';
+
         try {
-          const data = await apiSend(`${BASE}/posts`, 'POST', { raw, topic_id: ctx.topicId, reply_to_post_number: postNumber, nested_post: true });
-          box.classList.remove('open'); textarea.value = '';
-          if (data && data.cooked) {
-            const newNode = renderPost({ id: data.id, post_number: data.post_number, username: data.username || ME_USERNAME, name: data.name, avatar_template: data.avatar_template, cooked: data.cooked, created_at: data.created_at || new Date().toISOString(), reply_to_post_number: postNumber, actions_summary: [] }, true, ctx);
-            post.querySelector(':scope > .ldp-children').appendChild(newNode); ctx.tracker.observe(newNode);
+          const data = await apiSend(`${BASE}/posts`, 'POST', {
+            raw,
+            topic_id: ctx.topicId,
+            reply_to_post_number: postNumber,
+            nested_post: true,
+          });
+
+          // 拿到回复数据
+          const postData = data && data.post ? data.post : data;
+
+          if (postData && postData.cooked) {
+            const newNode = renderPost({
+              id: postData.id,
+              post_number: postData.post_number,
+              username: postData.username || ME_USERNAME,
+              name: postData.name,
+              avatar_template: postData.avatar_template,
+              cooked: postData.cooked,
+              created_at: postData.created_at || new Date().toISOString(),
+              reply_to_post_number: postNumber,
+              actions_summary: [],
+            }, true, ctx);
+
+            newNode.classList.add('ldp-flash');
+
+            const childrenContainer = postNode.querySelector(':scope > .ldp-children');
+            childrenContainer.prepend(newNode);
+
+            ctx.nodeMap.set(postData.post_number, newNode);
+            ctx.tracker.observe(newNode);
+
+            const tip = box.querySelector('.ldp-reply-tip');
+            if (tip) {
+              tip.classList.add('show');
+              setTimeout(() => tip.classList.remove('show'), 1500);
+            }
+
+            box.classList.remove('open');
+            textarea.value = '';
           }
-        } catch (err) { alert('回复失败：' + err.message); } finally { sendBtn.disabled = false; sendBtn.textContent = '发送'; }
+        } catch (err) {
+          alert('回复失败：' + err.message);
+        } finally {
+          sendBtn.disabled = false;
+          sendBtn.textContent = '发送';
+        }
         return;
       }
     });
@@ -650,7 +776,7 @@
     if (ctx.emptyEl) ctx.emptyEl.style.display = ctx.totalComments ? 'none' : '';
   }
 
-  /* 骨架屏 HTML（body 内容部分） */
+  /* 骨架屏 HTML */
   const SKELETON_HTML = `
     <div class="ldp-sk-head">
       <div class="ldp-sk ldp-sk-avatar"></div>
@@ -669,21 +795,6 @@
         <div class="ldp-sk ldp-sk-line ldp-sk-w30"></div>
         <div class="ldp-sk ldp-sk-line ldp-sk-w90"></div>
         <div class="ldp-sk ldp-sk-line ldp-sk-w60"></div>
-      </div>
-    </div>
-    <div class="ldp-sk-comment">
-      <div class="ldp-sk ldp-sk-avatar"></div>
-      <div class="ldp-sk-cbody ldp-sk-para">
-        <div class="ldp-sk ldp-sk-line ldp-sk-w40"></div>
-        <div class="ldp-sk ldp-sk-line ldp-sk-w100"></div>
-        <div class="ldp-sk ldp-sk-line ldp-sk-w80"></div>
-      </div>
-    </div>
-    <div class="ldp-sk-comment">
-      <div class="ldp-sk ldp-sk-avatar"></div>
-      <div class="ldp-sk-cbody ldp-sk-para">
-        <div class="ldp-sk ldp-sk-line ldp-sk-w30"></div>
-        <div class="ldp-sk ldp-sk-line ldp-sk-w90"></div>
       </div>
     </div>`;
 
