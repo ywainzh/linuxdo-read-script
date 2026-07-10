@@ -492,6 +492,10 @@
     const isME = ME_USERNAME && p.username === ME_USERNAME;
     const time = fmtTime(p.created_at);
 
+    // --- 修改点：强制 cooked 里的链接在新标签页打开 ---
+    let cooked = p.cooked || '';
+    cooked = cooked.replace(/<a\s+(?![^>]*target=)/gi, '<a target="_blank" ');
+
     const node = document.createElement('div');
     node.className = 'ldp-post' + (isReply ? ' ldp-reply' : '');
     node.dataset.postId = p.id;
@@ -506,7 +510,7 @@
         ${time ? `<span class="ldp-time">· ${esc(time)}</span>` : ''}
         <span class="ldp-floor">#${p.post_number}</span>
       </div>
-      <div class="ldp-content">${p.cooked || ''}</div>
+      <div class="ldp-content">${cooked}</div>
       <div class="ldp-actions">
         <button class="ldp-btn ldp-like ${acted ? 'liked' : ''}"
           data-acted="${acted ? '1' : '0'}" ${canAct || acted ? '' : 'disabled'}>
@@ -622,6 +626,13 @@
   /* ============ 10. 事件委托 ============ */
   function bindActions(modal, ctx) {
     modal.addEventListener('click', async (e) => {
+      // --- 修改点：如果点击的是普通的 <a> 链接且不是功能按钮，允许其默认行为（新标签页打开） ---
+      const anchor = e.target.closest('a');
+      if (anchor && anchor.target === '_blank') {
+        // 允许默认跳转，不执行 e.preventDefault()
+        return;
+      }
+
       const img = e.target.closest('.ldp-content img');
       if (img) { e.preventDefault(); e.stopPropagation(); openLightbox(resolveOriginalSrc(img)); return; }
 
