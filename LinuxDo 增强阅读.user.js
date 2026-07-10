@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.0.8
+// @version      1.0.9
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -110,7 +110,7 @@
     .ldp-comments{padding-top:4px;}
     .ldp-comments-empty{padding:18px 0;text-align:center;opacity:.5;font-size:13px;}
 
-    .ldp-post{padding:12px 0;border-bottom:1px solid var(--primary-low,#eee);}
+    .ldp-post{padding:12px 0 12px 12px;border-bottom:1px solid var(--primary-low,#eee);}
     .ldp-post.ldp-flash{animation:ldp-flash-bg 1.6s ease;}
     @keyframes ldp-flash-bg{
       0%{background:rgba(8,132,255,.16);}
@@ -130,8 +130,8 @@
     .ldp-content img{max-width:100%;height:auto;cursor:zoom-in;border-radius:4px;}
     .ldp-content pre{overflow:auto;background:var(--primary-very-low,#f6f6f6);
       padding:10px;border-radius:6px;}
-    .ldp-children{margin-left:22px;padding-left:14px;
-      border-left:2px solid var(--tertiary,#08c);}
+    .ldp-children{margin-left:22px;
+      border-left:1px solid var(--tertiary,#08c);}
     .ldp-actions{display:flex;gap:14px;margin-top:8px;font-size:12px;align-items:center;}
     .ldp-btn{cursor:pointer;border:none;background:transparent;color:inherit;
       opacity:.7;display:inline-flex;align-items:center;gap:4px;padding:2px 4px;}
