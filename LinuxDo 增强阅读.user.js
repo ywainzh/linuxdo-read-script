@@ -187,7 +187,7 @@
     .ldp-boost-bubble{display:inline-flex;align-items:center;gap:4px;
       padding:3px 8px 3px 4px;border:none;
       background:rgba(128,128,128,.1);border-radius:50px;
-      font-size:11px;line-height:1.4;cursor:default;position:relative;
+      font-size:14px;line-height:1.4;cursor:default;position:relative;
       transition:background .15s;}
     .ldp-boost-bubble:hover{background:rgba(128,128,128,.18);}
     /* 气泡内头像 */
@@ -230,6 +230,20 @@
     .ldp-btn.ldp-boost-btn:disabled{opacity:.35;cursor:default;pointer-events:none;}
   `;
   document.head.appendChild(style);
+
+  /* 图标 */
+  const ICONS = {
+    // 点赞
+    like: '<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>',
+    // 回复
+    reply: '<path d="M1024 640q0 94.857143-72.571429 257.714286-1.714286 4-6 13.714286t-7.714286 17.142857-7.428571 12.571429q-6.857143 9.714286-16 9.714286-8.571429 0-13.428571-5.714286t-4.857143-14.285714q0-5.142857 1.428571-15.142857t1.428571-13.428571q2.857143-38.857143 2.857143-70.285714 0-57.714286-10-103.428571t-27.714286-79.142857-45.714286-57.714286-60.285714-39.714286-76-24.285714-88-12.285714-100.285714-3.428571l-128 0 0 146.285714q0 14.857143-10.857143 25.714286t-25.714286 10.857143-25.714286-10.857143l-292.571429-292.571429q-10.857143-10.857143-10.857143-25.714286t10.857143-25.714286l292.571429-292.571429q10.857143-10.857143 25.714286-10.857143t25.714286 10.857143 10.857143 25.714286l0 146.285714 128 0q407.428571 0 500 230.285714 30.285714 76.571429 30.285714 190.285714z"/>',
+    // boost
+    boost: '<path d="M1010.092957 38.19946a31.779551 31.779551 0 0 0-24.399655-24.399655C921.294212 0 870.914925 0 820.715635 0c-206.397081 0-330.195331 110.398439-422.574025 255.99638H189.744557A95.998643 95.998643 0 0 0 104.005769 308.975631l-98.838602 197.597206A47.999321 47.999321 0 0 0 48.146559 575.991855h207.537065l-44.939364 44.939365a63.999095 63.999095 0 0 0 0 90.49872l101.79856 101.81856a63.999095 63.999095 0 0 0 90.51872 0L448.000905 768.309136V975.986199a47.999321 47.999321 0 0 0 69.399019 42.979392l197.397208-98.778603a95.818645 95.818645 0 0 0 52.999251-85.798787V625.571154c145.177947-92.598691 255.99638-216.796934 255.99638-422.17403 0.199997-50.399287 0.199997-100.798575-13.699806-165.197664zM767.99638 335.995249a79.998869 79.998869 0 1 1 79.998869-79.998869 79.998869 79.998869 0 0 1-79.998869 79.998869z"/>',
+    // 书签
+    bookmark: '<path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/>',
+    // 新标签页打开
+    newTab: '<path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>'
+  };
 
   /* ============ 2. 工具 ============ */
   const esc = (s) => (s || '').replace(/[<>&]/g, (c) =>
@@ -580,11 +594,16 @@
       </div>
       <div class="ldp-actions">
         <button class="ldp-btn ldp-like ${acted ? 'liked' : ''}"
-          data-acted="${acted ? '1' : '0'}" ${canAct || acted ? '' : 'disabled'}>
-          ♥ <span class="ldp-like-count">${count}</span>
+          data-acted="${acted ? '1' : '0'}" ${canAct || acted ? '' : 'disabled'} title="点赞">
+            <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;vertical-align:middle;">${ICONS.like}</svg>
+          <span class="ldp-like-count">${count}</span>
         </button>
-        <button class="ldp-btn ldp-replybtn">↩ 回复</button>
-        ${canBoost ? '<button class="ldp-btn ldp-boost-btn" title="Boost">🚀</button>' : ''}
+        <button class="ldp-btn ldp-replybtn" title="回复">
+            <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.reply}</svg>
+        </button>
+        <button class="ldp-btn ldp-boost-btn" ${canBoost ? '' : 'disabled'} title="Boost">
+          <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.boost}</svg>
+        </button>
       </div>
       <div class="ldp-children"></div>
       <div class="ldp-sub-loading">加载楼中楼中…</div>
@@ -600,7 +619,7 @@
     const username = (post.querySelector(':scope > .ldp-post-head .ldp-user')?.textContent || '').replace(/^@/, '');
     box = document.createElement('div');
     box.className = 'ldp-replybox';
-    box.innerHTML = `<textarea placeholder="回复 @${esc(username)} … (支持直接粘贴图片)"></textarea><button class="ldp-send">发送</button><span class="ldp-reply-tip">✓ 已发送</span>`;
+    box.innerHTML = `<textarea placeholder="回复 @${esc(username)} … (最少16个字符)"></textarea><button class="ldp-send">发送</button><span class="ldp-reply-tip">✓ 已发送</span>`;
 
     const textarea = box.querySelector('textarea');
     bindPasteEvent(textarea); // 绑定粘贴事件
@@ -693,12 +712,9 @@
   /* ============ 10. 事件委托 ============ */
   function bindActions(modal, ctx) {
     modal.addEventListener('click', async (e) => {
-      // --- 修改点：如果点击的是普通的 <a> 链接且不是功能按钮，允许其默认行为（新标签页打开） ---
+      // 允许内容区 <a target="_blank"> 正常跳转
       const anchor = e.target.closest('a');
-      if (anchor && anchor.target === '_blank') {
-        // 允许默认跳转，不执行 e.preventDefault()
-        return;
-      }
+      if (anchor && anchor.target === '_blank') return;
 
       const img = e.target.closest('.ldp-content img');
       if (img) { e.preventDefault(); e.stopPropagation(); openLightbox(resolveOriginalSrc(img)); return; }
@@ -741,7 +757,7 @@
         return;
       }
 
-      // 🚀 Boost按钮：展开/收起输入框
+      // Boost按钮：展开/收起输入框
       const boostBtn = e.target.closest('.ldp-boost-btn');
       if (boostBtn && !boostBtn.disabled) {
         const wrap = postNode.querySelector(':scope > .ldp-boost-input-wrap');
@@ -767,6 +783,7 @@
         const input = wrap && wrap.querySelector('.ldp-boost-input');
         const raw = input ? input.value.trim() : '';
         if (!raw) { input && input.focus(); return; }
+        if (raw.length > 16) { alert('Boost内容不能超过16个字符'); return; }
         boostSubmit.disabled = true;
         try {
           const res = await apiSend(`${BASE}/discourse-boosts/posts/${postId}/boosts`, 'POST', { raw });
@@ -787,33 +804,42 @@
             }
             input.value = '';
             wrap.classList.remove('open');
-            // 每人只能发一条——发完后移除按钮
+
             const btn = postNode.querySelector(':scope > .ldp-actions > .ldp-boost-btn');
-            if (btn) btn.remove();
+            if (btn) btn.disabled = true;
+
+            if (postNumber === 1) {
+              const fBoost = ctx.scrollRoot.closest('.ldp-modal').querySelector('.ldp-f-boost');
+              if (fBoost) {
+                fBoost.disabled = true;
+                fBoost.style.opacity = '0.4';
+              }
+            }
           }
         } catch (err) { alert('发射失败：' + err.message); }
         finally { boostSubmit.disabled = false; }
         return;
       }
 
-      // 🚀 删除 Boost 气泡
+      // 删除 Boost 气泡
       const boostDel = e.target.closest('.ldp-boost-del');
       if (boostDel) {
         const bubble = boostDel.closest('.ldp-boost-bubble');
         const boostId = bubble && bubble.dataset.boostId;
         if (!boostId) return;
-        if (!confirm('确定删除这条Boost吗？')) return;
         try {
           await apiSend(`${BASE}/discourse-boosts/boosts/${boostId}`, 'DELETE');
           bubble.remove();
-          // 恢复"Boost"按钮（供重新发射）
-          const actionsEl = postNode.querySelector(':scope > .ldp-actions');
-          if (actionsEl && !actionsEl.querySelector('.ldp-boost-btn')) {
-            const newBtn = document.createElement('button');
-            newBtn.className = 'ldp-btn ldp-boost-btn';
-            newBtn.title = '发射Boost';
-            newBtn.textContent = '🚀 Boost';
-            actionsEl.appendChild(newBtn);
+
+          const btn = postNode.querySelector(':scope > .ldp-actions > .ldp-boost-btn');
+          if (btn) btn.disabled = false;
+
+          if (postNumber === 1) {
+            const fBoost = ctx.scrollRoot.closest('.ldp-modal').querySelector('.ldp-f-boost');
+            if (fBoost) {
+              fBoost.disabled = false;
+              fBoost.style.opacity = '1';
+            }
           }
         } catch (err) { alert('删除失败：' + err.message); }
         return;
@@ -939,7 +965,7 @@
   function bindBookmark(btn, topic) {
     let bookmarked = !!topic.bookmarked, bookmarkId = topic.bookmark_id || null;
     const textEl = btn.querySelector('.ldp-f-bookmark-text') || btn;
-    const sync = () => { btn.classList.toggle('bookmarked', bookmarked); textEl.textContent = bookmarked ? '已收藏' : '收藏'; };
+    const sync = () => { btn.classList.toggle('bookmarked', bookmarked); };
     sync();
     btn.addEventListener('click', async () => {
       btn.disabled = true;
@@ -1036,20 +1062,21 @@
         </div>
         <div class="ldp-footer" hidden>
           <button class="ldp-fbtn ldp-f-like" disabled title="点赞">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor">${ICONS.like}</svg>
             <span class="ldp-f-like-count">0</span>
           </button>
           <button class="ldp-fbtn ldp-f-reply" title="回复帖子">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.99 4c0-1.1-.89-2-1.99-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4-.01-18z"/></svg>
+            <svg viewBox="0 0 1024 1024" fill="currentColor">${ICONS.reply}</svg>
             <span class="ldp-f-reply-count">0</span>
           </button>
-          <button class="ldp-fbtn ldp-f-bookmark" title="收藏">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
-            <span class="ldp-f-bookmark-text">收藏</span>
+          <button class="ldp-fbtn ldp-f-boost" title="给楼主发送Boost">
+            <svg viewBox="0 0 1024 1024" style="width:16px;height:16px;">${ICONS.boost}</svg>
           </button>
-          <a class="ldp-fbtn ldp-f-open" href="#" target="_blank" rel="noopener" title="新标签页打开">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-            <span>打开原帖</span>
+          <button class="ldp-fbtn ldp-f-bookmark" title="加入书签">
+            <svg viewBox="0 0 24 24" fill="currentColor">${ICONS.bookmark}</svg>
+          </button>
+          <a class="ldp-fbtn ldp-f-open" href="#" target="_blank" rel="noopener" title="打开原贴">
+            <svg viewBox="0 0 24 24" fill="currentColor">${ICONS.newTab}</svg>
           </a>
         </div>
       </div>`;
@@ -1063,8 +1090,8 @@
     const loadingTip = overlay.querySelector('.ldp-loading-tip');
     const footerEl = overlay.querySelector('.ldp-footer');
     const fLikeBtn = overlay.querySelector('.ldp-f-like'), fLikeCountEl = overlay.querySelector('.ldp-f-like-count');
-    const fReplyBtn = overlay.querySelector('.ldp-f-reply'), fBookmarkBtn = overlay.querySelector('.ldp-f-bookmark');
-    const fReplyCountEl = overlay.querySelector('.ldp-f-reply-count');
+    const fReplyBtn = overlay.querySelector('.ldp-f-reply'), fReplyCountEl = overlay.querySelector('.ldp-f-reply-count');
+    const fBoostBtn = overlay.querySelector('.ldp-f-boost'), fBookmarkBtn = overlay.querySelector('.ldp-f-bookmark');
     const fOpenLink = overlay.querySelector('.ldp-f-open');
 
     const loader = createLoader(topicId), tracker = createReadTracker(topicId, body);
@@ -1127,6 +1154,28 @@
       fOpenLink.href = `${BASE}/t/${topic.id}`;
       bindBookmark(fBookmarkBtn, topic);
       bindFooterLike(fLikeBtn, fLikeCountEl, topic._opPost);
+
+      const hasOpPost = !!topic._opPost;
+      const canBoostOp = hasOpPost && topic._opPost.can_boost === true;
+      if (!canBoostOp) {
+        fBoostBtn.disabled = true;
+        fBoostBtn.style.opacity = '0.4';
+      }
+      fBoostBtn.addEventListener('click', () => {
+        if (fBoostBtn.disabled) return;
+        const opNode = ctx.topicEl.querySelector('.ldp-post');
+        if (!opNode) return;
+        const wrap = opNode.querySelector(':scope > .ldp-boost-input-wrap');
+        if (!wrap) return;
+        const opening = !wrap.classList.contains('open');
+        wrap.classList.toggle('open', opening);
+        if (opening) {
+          wrap.querySelector('.ldp-boost-input').focus();
+          wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+      fBookmarkBtn.before(fBoostBtn);
+
       fReplyBtn.addEventListener('click', () => {
         const opNode = ctx.topicEl.querySelector('.ldp-post');
         if (!opNode) return;
