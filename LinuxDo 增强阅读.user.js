@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.0.9
+// @version      1.1.0
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -180,13 +180,54 @@
     .ldp-sub-loading{font-size:12px;opacity:.5;margin-left:22px;padding-left:14px;
       margin-top:2px;display:none;}
 
-    /* 下拉加载评论时的底部加载提示 */
-    .ldp-loading-tip{padding:14px 0;text-align:center;font-size:13px;
-      color:var(--primary-medium,#888);display:none;user-select:none;}
-    .ldp-loading-tip.show{display:block;}
-    .ldp-loading-tip .ldp-tip-icon{display:inline-block;margin-right:6px;
-      animation:ldp-spin .9s linear infinite;}
-    @keyframes ldp-spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+    /* ============ Boost样式（仿官方 discourse-boosts 插件，独立实现） ============ */
+    /* 气泡列表 */
+    .ldp-boosts-list{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:6px;min-height:0;}
+    /* 单个气泡：胶囊形，与官方 bubble 对齐 */
+    .ldp-boost-bubble{display:inline-flex;align-items:center;gap:4px;
+      padding:3px 8px 3px 4px;border:none;
+      background:rgba(128,128,128,.1);border-radius:50px;
+      font-size:11px;line-height:1.4;cursor:default;position:relative;
+      transition:background .15s;}
+    .ldp-boost-bubble:hover{background:rgba(128,128,128,.18);}
+    /* 气泡内头像 */
+    .ldp-b-avatar{width:18px;height:18px;border-radius:50%;flex:none;display:block;}
+    /* 气泡内文字/表情段落 */
+    .ldp-boost-bubble p{margin:0;display:inline-flex;gap:2px;align-items:center;flex-wrap:wrap;}
+    .ldp-boost-bubble p img.emoji{width:14px;height:14px;margin:0;vertical-align:middle;}
+    /* 删除按钮：hover 气泡时才显示 */
+    .ldp-boost-del{cursor:pointer;margin-left:2px;opacity:0;font-size:13px;
+      color:var(--danger,#cc4b4b);line-height:1;border:none;background:transparent;
+      padding:0 2px;transition:opacity .15s;flex:none;}
+    .ldp-boost-bubble:hover .ldp-boost-del{opacity:.65;}
+    .ldp-boost-del:hover{opacity:1!important;}
+    /* 发射输入框容器：默认隐藏，.open 时展开 */
+    .ldp-boost-input-wrap{display:none;align-items:center;gap:5px;margin-top:6px;
+      padding:4px 6px;border-radius:8px;
+      border:1px solid var(--primary-low,#ddd);
+      background:var(--secondary,#fff);}
+    .ldp-boost-input-wrap.open{display:flex;}
+    /* 输入框本身 */
+    .ldp-boost-input{flex:1;border:none;background:transparent;outline:none;
+      font-size:13px;padding:2px 4px;color:inherit;min-width:0;}
+    .ldp-boost-input::placeholder{color:var(--primary-medium,#999);font-size:12px;}
+    /* 发射确认按钮（绿色圆形） */
+    .ldp-boost-submit{width:22px;height:22px;padding:0;display:flex;flex:none;
+      align-items:center;justify-content:center;border-radius:50%;
+      border:1px solid #3ea66b;background:transparent;color:#3ea66b;
+      cursor:pointer;font-size:14px;line-height:1;transition:all .15s;}
+    .ldp-boost-submit:hover{background:#3ea66b;color:#fff;}
+    .ldp-boost-submit:disabled{opacity:.5;cursor:default;pointer-events:none;}
+    /* 取消按钮（红色圆形） */
+    .ldp-boost-cancel{width:22px;height:22px;padding:0;display:flex;flex:none;
+      align-items:center;justify-content:center;border-radius:50%;
+      border:1px solid var(--danger,#cc4b4b);background:transparent;
+      color:var(--danger,#cc4b4b);cursor:pointer;font-size:16px;line-height:1;
+      transition:all .15s;}
+    .ldp-boost-cancel:hover{background:var(--danger,#cc4b4b);color:#fff;}
+    /* 操作栏里的火箭按钮 */
+    .ldp-btn.ldp-boost-btn{font-size:12px;}
+    .ldp-btn.ldp-boost-btn:disabled{opacity:.35;cursor:default;pointer-events:none;}
   `;
   document.head.appendChild(style);
 
@@ -262,6 +303,21 @@
   function likeInfo(p) {
     const like = (p.actions_summary || []).find((a) => a.id === 2) || {};
     return { count: like.count || 0, acted: !!like.acted, canAct: !!like.can_act };
+  }
+
+  /* ============ 2.5 Boosts 气泡渲染辅助 ============ */
+  function renderBoosts(boosts) {
+    if (!boosts || !boosts.length) return '';
+    return boosts.map((b) => {
+      const bAvatar = b.user && b.user.avatar_template
+          ? BASE + b.user.avatar_template.replace('{size}', '36') : '';
+      const canDel = !!b.can_delete;
+      return `<div class="ldp-boost-bubble" data-boost-id="${b.id}">` +
+          (bAvatar ? `<img class="ldp-b-avatar" src="${bAvatar}" alt="">` : '') +
+          `<p>${b.cooked || ''}</p>` +
+          (canDel ? `<button class="ldp-boost-del" title="删除此Boost">×</button>` : '') +
+          `</div>`;
+    }).join('');
   }
 
   /* ============ 3. 单图灯箱 ============ */
@@ -492,9 +548,13 @@
     const isME = ME_USERNAME && p.username === ME_USERNAME;
     const time = fmtTime(p.created_at);
 
-    // --- 修改点：强制 cooked 里的链接在新标签页打开 ---
+    // 强制 cooked 里的链接在新标签页打开
     let cooked = p.cooked || '';
     cooked = cooked.replace(/<a\s+(?![^>]*target=)/gi, '<a target="_blank" ');
+
+    // Boosts 数据
+    const boostsHtml = renderBoosts(p.boosts || []);
+    const canBoost = p.can_boost === true;
 
     const node = document.createElement('div');
     node.className = 'ldp-post' + (isReply ? ' ldp-reply' : '');
@@ -511,12 +571,20 @@
         <span class="ldp-floor">#${p.post_number}</span>
       </div>
       <div class="ldp-content">${cooked}</div>
+      <div class="ldp-boosts-list">${boostsHtml}</div>
+      <div class="ldp-boost-input-wrap">
+        <input type="text" class="ldp-boost-input" maxlength="50"
+          placeholder="Boost ${esc(p.username)}… (最多16字符)">
+        <button class="ldp-boost-submit" title="发送">✓</button>
+        <button class="ldp-boost-cancel" title="取消">×</button>
+      </div>
       <div class="ldp-actions">
         <button class="ldp-btn ldp-like ${acted ? 'liked' : ''}"
           data-acted="${acted ? '1' : '0'}" ${canAct || acted ? '' : 'disabled'}>
           ♥ <span class="ldp-like-count">${count}</span>
         </button>
         <button class="ldp-btn ldp-replybtn">↩ 回复</button>
+        ${canBoost ? '<button class="ldp-btn ldp-boost-btn" title="Boost">🚀</button>' : ''}
       </div>
       <div class="ldp-children"></div>
       <div class="ldp-sub-loading">加载楼中楼中…</div>
@@ -549,7 +617,6 @@
     formData.append('file', file);
     formData.append('type', 'composer');
     formData.append('synchronous', 'true');
-
     return apiSend(`${BASE}/uploads.json`, 'POST', formData);
   }
 
@@ -674,6 +741,84 @@
         return;
       }
 
+      // 🚀 Boost按钮：展开/收起输入框
+      const boostBtn = e.target.closest('.ldp-boost-btn');
+      if (boostBtn && !boostBtn.disabled) {
+        const wrap = postNode.querySelector(':scope > .ldp-boost-input-wrap');
+        if (!wrap) return;
+        const opening = !wrap.classList.contains('open');
+        wrap.classList.toggle('open', opening);
+        if (opening) wrap.querySelector('.ldp-boost-input').focus();
+        return;
+      }
+
+      // 🚀 取消发射
+      const boostCancel = e.target.closest('.ldp-boost-cancel');
+      if (boostCancel) {
+        const wrap = boostCancel.closest('.ldp-boost-input-wrap');
+        if (wrap) { wrap.classList.remove('open'); wrap.querySelector('.ldp-boost-input').value = ''; }
+        return;
+      }
+
+      // 🚀 确认发射
+      const boostSubmit = e.target.closest('.ldp-boost-submit');
+      if (boostSubmit && !boostSubmit.disabled) {
+        const wrap = boostSubmit.closest('.ldp-boost-input-wrap');
+        const input = wrap && wrap.querySelector('.ldp-boost-input');
+        const raw = input ? input.value.trim() : '';
+        if (!raw) { input && input.focus(); return; }
+        boostSubmit.disabled = true;
+        try {
+          const res = await apiSend(`${BASE}/discourse-boosts/posts/${postId}/boosts`, 'POST', { raw });
+          if (res && res.id) {
+            // 追加新气泡
+            const listEl = postNode.querySelector(':scope > .ldp-boosts-list');
+            if (listEl) {
+              const bAvatar = res.user && res.user.avatar_template
+                  ? BASE + res.user.avatar_template.replace('{size}', '36') : '';
+              const newBubble = document.createElement('div');
+              newBubble.className = 'ldp-boost-bubble ldp-flash';
+              newBubble.dataset.boostId = res.id;
+              newBubble.innerHTML =
+                  (bAvatar ? `<img class="ldp-b-avatar" src="${bAvatar}" alt="">` : '') +
+                  `<p>${res.cooked || ''}</p>` +
+                  `<button class="ldp-boost-del" title="删除此Boost">×</button>`;
+              listEl.appendChild(newBubble);
+            }
+            input.value = '';
+            wrap.classList.remove('open');
+            // 每人只能发一条——发完后移除按钮
+            const btn = postNode.querySelector(':scope > .ldp-actions > .ldp-boost-btn');
+            if (btn) btn.remove();
+          }
+        } catch (err) { alert('发射失败：' + err.message); }
+        finally { boostSubmit.disabled = false; }
+        return;
+      }
+
+      // 🚀 删除 Boost 气泡
+      const boostDel = e.target.closest('.ldp-boost-del');
+      if (boostDel) {
+        const bubble = boostDel.closest('.ldp-boost-bubble');
+        const boostId = bubble && bubble.dataset.boostId;
+        if (!boostId) return;
+        if (!confirm('确定删除这条Boost吗？')) return;
+        try {
+          await apiSend(`${BASE}/discourse-boosts/boosts/${boostId}`, 'DELETE');
+          bubble.remove();
+          // 恢复"Boost"按钮（供重新发射）
+          const actionsEl = postNode.querySelector(':scope > .ldp-actions');
+          if (actionsEl && !actionsEl.querySelector('.ldp-boost-btn')) {
+            const newBtn = document.createElement('button');
+            newBtn.className = 'ldp-btn ldp-boost-btn';
+            newBtn.title = '发射Boost';
+            newBtn.textContent = '🚀 Boost';
+            actionsEl.appendChild(newBtn);
+          }
+        } catch (err) { alert('删除失败：' + err.message); }
+        return;
+      }
+
       // 发送回复
       const sendBtn = e.target.closest('.ldp-send');
       if (sendBtn) {
@@ -709,6 +854,8 @@
               created_at: postData.created_at || new Date().toISOString(),
               reply_to_post_number: postNumber,
               actions_summary: [],
+              boosts: [],
+              can_boost: true,
             }, !isTopLevel, ctx);
 
             newNode.classList.add('ldp-flash');
