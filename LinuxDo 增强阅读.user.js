@@ -960,7 +960,7 @@
         if (done && !overlay.querySelector('.ldp-bottom-tip')) {
           const tip = document.createElement('div');
           tip.className = 'ldp-bottom-tip';
-          tip.textContent = '已加载完全部评论';
+          tip.textContent = '已加载全部评论';
           body.insertBefore(tip, sentinel);
         }
       } catch (e) {} finally {
