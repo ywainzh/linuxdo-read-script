@@ -158,6 +158,9 @@
       animation:ldp-spin .9s linear infinite;}
     @keyframes ldp-spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
 
+    .ldp-bottom-tip{padding:16px 0;text-align:center;font-size:13px;
+      color:var(--primary-medium,#888);user-select:none;}
+
     /* 灯箱 */
     .ldp-lightbox{position:fixed;inset:0;z-index:2147483600;display:flex;
       flex-direction:column;background:rgba(0,0,0,.9);}
@@ -943,11 +946,11 @@
           }
           done = isDone;
         }
-        if (done && !overlay.querySelector('.ldp-link-open')) {
-          const link = document.createElement('a');
-          link.className = 'ldp-link-open'; link.href = `${BASE}/t/${topicId}`; link.target = '_blank';
-          link.textContent = '已到底 · 在新标签页打开原帖 →';
-          body.insertBefore(link, sentinel);
+        if (done && !overlay.querySelector('.ldp-bottom-tip')) {
+          const tip = document.createElement('div');
+          tip.className = 'ldp-bottom-tip';
+          tip.textContent = '已加载完全部评论';
+          body.insertBefore(tip, sentinel);
         }
       } catch (e) {} finally {
         loading = false;
