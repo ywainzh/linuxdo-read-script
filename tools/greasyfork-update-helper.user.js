@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         LinuxDo Greasy Fork 发布助手
 // @namespace    https://github.com/ywainzh/linuxdo-read-script
-// @version      0.1.0
+// @version      0.1.1
 // @license      MIT
 // @description  在 LinuxDo 便捷脚本的 Greasy Fork 页面一键从 GitHub 拉取最新版并发布更新。
 // @author       ywainzh
 // @match        https://greasyfork.org/*/scripts/586863*
 // @match        https://greasyfork.org/*/script_versions/*
+// @connect      api.github.com
 // @connect      raw.githubusercontent.com
 // @grant        GM_xmlhttpRequest
 // @run-at       document-idle
@@ -17,7 +18,12 @@
 
   const SCRIPT_ID = '586863';
   const SCRIPT_NAME = 'LinuxDo 便捷脚本';
-  const RAW_URL = 'https://raw.githubusercontent.com/ywainzh/linuxdo-read-script/main/LinuxDo%20%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC.user.js';
+  const REPO_OWNER = 'ywainzh';
+  const REPO_NAME = 'linuxdo-read-script';
+  const REPO_BRANCH = 'main';
+  const SCRIPT_PATH = 'LinuxDo%20%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC.user.js';
+  const COMMIT_API_URL = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/commits/${REPO_BRANCH}`;
+  const RAW_URL_BASE = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}`;
 
   const STORE_PENDING = 'linuxdo.gfUpdate.pending';
   const STORE_AUTO_PUBLISH = 'linuxdo.gfUpdate.autoPublish';
@@ -63,6 +69,27 @@
       if (!response.ok) throw new Error(`GitHub 返回 HTTP ${response.status}`);
       return response.text();
     });
+  }
+
+  async function fetchLatestCommitSha() {
+    const responseText = await requestText(COMMIT_API_URL);
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (e) {
+      throw new Error('GitHub commit API 返回内容无法解析。');
+    }
+    if (!data || !/^[0-9a-f]{40}$/i.test(data.sha || '')) {
+      throw new Error('未能从 GitHub 读取 main 分支最新 commit。');
+    }
+    return data.sha;
+  }
+
+  async function fetchLatestScript() {
+    const sha = await fetchLatestCommitSha();
+    const rawUrl = `${RAW_URL_BASE}/${sha}/${SCRIPT_PATH}`;
+    const code = await requestText(rawUrl);
+    return { code, sha };
   }
 
   function validateCode(code) {
@@ -115,12 +142,13 @@
         return;
       }
 
-      setStatus('正在从 GitHub 拉取最新版...');
-      const code = await requestText(RAW_URL);
+      setStatus('正在读取 GitHub main 最新 commit...');
+      const { code, sha } = await fetchLatestScript();
       const meta = validateCode(code);
+      const shortSha = sha.slice(0, 7);
 
       const ok = window.confirm(
-        `将从 GitHub 拉取并公开发布 ${meta.name} v${meta.version} 到 Greasy Fork。\n\n` +
+        `将从 GitHub ${shortSha} 拉取并公开发布 ${meta.name} v${meta.version} 到 Greasy Fork。\n\n` +
         '请确认你已经把本地修改推送到 GitHub，并且 @version 已递增。'
       );
       if (!ok) {
@@ -128,7 +156,7 @@
         return;
       }
 
-      setStatus(`已拉取 v${meta.version}，正在打开 Greasy Fork 更新表单...`);
+      setStatus(`已从 ${shortSha} 拉取 v${meta.version}，正在打开 Greasy Fork 更新表单...`);
       submitPrefillForm(code, meta.version);
     } catch (error) {
       setStatus(error.message || String(error), 'error');
@@ -194,7 +222,7 @@
         #linuxdo-gf-update-status[data-tone="error"]{color:#d1242f;opacity:1;}
       </style>
       <button type="button" id="linuxdo-gf-update-button">拉取 GitHub 最新版并发布</button>
-      <div id="linuxdo-gf-update-status">来源：GitHub main 分支的主脚本文件。</div>
+      <div id="linuxdo-gf-update-status">来源：GitHub main 最新 commit 的主脚本文件。</div>
     `;
     document.body.appendChild(panel);
     document.querySelector('#linuxdo-gf-update-button').addEventListener('click', startUpdate);
