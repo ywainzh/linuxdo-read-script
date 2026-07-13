@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.2
+// @version      1.1.3
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -169,8 +169,12 @@
     .ldp-lb-stage img{display:block;max-width:94vw;max-height:88vh;
       width:auto;height:auto;border-radius:4px;cursor:zoom-out;
       box-shadow:0 10px 40px rgba(0,0,0,.6);}
-    .ldp-lb-x{position:fixed;top:14px;right:18px;z-index:1;cursor:pointer;border:none;
-      background:transparent;color:#fff;font-size:30px;line-height:1;}
+    .ldp-lb-x{position:fixed;top:12px;right:12px;z-index:1;display:grid;
+      width:44px;height:44px;place-items:center;cursor:pointer;
+      border:1px solid rgba(255,255,255,.45);border-radius:4px;
+      background:rgba(0,0,0,.35);color:#fff;font-size:30px;line-height:1;}
+    .ldp-lb-x:hover{background:rgba(255,255,255,.14);}
+    .ldp-lb-x:focus-visible{outline:3px solid #fff;outline-offset:2px;}
 
     /* 楼中楼“展示更多回复”按钮 */
     .ldp-sub-actions{margin-left:22px;padding-left:14px;margin-top:2px;display:none;}
@@ -337,32 +341,53 @@
   /* ============ 3. 单图灯箱 ============ */
   function openLightbox(src) {
     if (!src) return;
+    const returnFocus = document.activeElement;
     const lb = document.createElement('div');
     lb.className = 'ldp-lightbox';
+    lb.setAttribute('role', 'dialog');
+    lb.setAttribute('aria-modal', 'true');
+    lb.setAttribute('aria-label', '图片预览');
     lb.innerHTML = `
-      <button class="ldp-lb-x" title="关闭（Esc）">×</button>
+      <button type="button" class="ldp-lb-x" title="关闭（Esc）" aria-label="关闭图片预览">×</button>
       <div class="ldp-lb-stage"><img alt=""></div>`;
     const stage = lb.querySelector('.ldp-lb-stage');
     const img = lb.querySelector('.ldp-lb-stage img');
+    const closeBtn = lb.querySelector('.ldp-lb-x');
     img.src = src;
-    const close = () => { lb.remove(); document.removeEventListener('keydown', onKey); };
+    const close = () => {
+      lb.remove();
+      document.removeEventListener('keydown', onKey);
+      if (returnFocus && returnFocus.isConnected && typeof returnFocus.focus === 'function') {
+        returnFocus.focus({ preventScroll: true });
+      }
+    };
     function onKey(e) { if (e.key === 'Escape') close(); }
-    lb.querySelector('.ldp-lb-x').addEventListener('click', close);
+    closeBtn.addEventListener('click', close);
     img.addEventListener('click', (e) => { e.stopPropagation(); close(); });
     stage.addEventListener('click', (e) => { if (e.target === stage) close(); });
     document.addEventListener('keydown', onKey);
     document.body.appendChild(lb);
+    closeBtn.focus({ preventScroll: true });
   }
 
-  function resolveOriginalSrc(imgEl) {
-    const a = imgEl.closest('a.lightbox, a[href]');
-    if (a && a.getAttribute('href')) {
-      const href = a.getAttribute('href');
-      if (/\.(png|jpe?g|gif|webp|bmp|avif)(\?|#|$)/i.test(href) || a.classList.contains('lightbox')) {
-        return href;
-      }
+  function isImageAnchor(anchor) {
+    if (!anchor) return false;
+    const href = anchor.getAttribute('href') || '';
+    return anchor.classList.contains('lightbox') ||
+      anchor.hasAttribute('data-download-href') ||
+      /\.(png|jpe?g|gif|webp|bmp|avif)(\?|#|$)/i.test(href);
+  }
+
+  function resolveOriginalSrc(sourceEl) {
+    const anchorSelector = 'a[href], a[data-download-href]';
+    const anchor = sourceEl.matches(anchorSelector) ? sourceEl : sourceEl.closest(anchorSelector);
+    const imgEl = sourceEl.matches('img') ? sourceEl :
+      (anchor && anchor.querySelector('img'));
+    if (isImageAnchor(anchor)) {
+      const href = anchor.getAttribute('href') || anchor.getAttribute('data-download-href');
+      if (href) return href;
     }
-    return imgEl.getAttribute('data-large-src') || imgEl.currentSrc || imgEl.src;
+    return imgEl && (imgEl.getAttribute('data-large-src') || imgEl.currentSrc || imgEl.src);
   }
 
   /* ============ 4. 已读追踪器 ============ */
@@ -568,10 +593,7 @@
       const tmp = document.createElement('div');
       tmp.innerHTML = cooked;
       tmp.querySelectorAll('a[href]').forEach(a => {
-        const href = a.getAttribute('href') || '';
-        const isImageLink = /\.(png|jpe?g|gif|webp|bmp|avif)(\?|#|$)/i.test(href);
-        const isLightbox = a.classList.contains('lightbox');
-        if (!isImageLink && !isLightbox) {
+        if (!isImageAnchor(a)) {
           if (!a.getAttribute('target')) a.setAttribute('target', '_blank');
         }
       });
@@ -724,12 +746,20 @@
   /* ============ 10. 事件委托 ============ */
   function bindActions(modal, ctx) {
     modal.addEventListener('click', async (e) => {
+      // 图片本体及其文件名/尺寸/右下角放大控件统一使用脚本灯箱，避免跳转到 CDN 原图页
+      const img = e.target.closest('.ldp-content img');
+      const contentAnchor = e.target.closest('.ldp-content a[href], .ldp-content a[data-download-href]');
+      const imageAnchor = isImageAnchor(contentAnchor) ? contentAnchor : null;
+      if (img || imageAnchor) {
+        e.preventDefault();
+        e.stopPropagation();
+        openLightbox(resolveOriginalSrc(imageAnchor || img));
+        return;
+      }
+
       // 允许内容区 <a target="_blank"> 正常跳转
       const anchor = e.target.closest('a');
       if (anchor && anchor.target === '_blank') return;
-
-      const img = e.target.closest('.ldp-content img');
-      if (img) { e.preventDefault(); e.stopPropagation(); openLightbox(resolveOriginalSrc(img)); return; }
 
       // 楼中楼“展示更多回复”按钮
       const moreBtn = e.target.closest('.ldp-load-more-replies');
@@ -1118,7 +1148,9 @@
     let loading = false, done = false, pendingRetry = false;
 
     const close = () => { tracker.stop(); ctx.repliesIO.disconnect(); overlay.remove(); if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null; document.removeEventListener('keydown', onEsc); };
-    function onEsc(e) { if (e.key === 'Escape') close(); }
+    function onEsc(e) {
+      if (e.key === 'Escape' && !document.querySelector('.ldp-lightbox')) close();
+    }
     overlay.querySelector('.ldp-close').addEventListener('click', close);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     document.addEventListener('keydown', onEsc);

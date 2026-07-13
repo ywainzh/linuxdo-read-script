@@ -2,7 +2,7 @@
 
 > 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
-![version](https://img.shields.io/badge/version-1.1.2-blue)
+![version](https://img.shields.io/badge/version-1.1.3-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-red)](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)
@@ -19,7 +19,7 @@
 - **点赞 / 取消赞**：显示点赞数，支持一键点赞与取消（取消受 Discourse 时间窗限制）。
 - **楼内回复**：可对任意楼层回复，发送后即时插入为该楼的楼中楼子节点。
 - **整帖收藏 / 取消收藏**：调用 Discourse 书签接口。
-- **原图灯箱**：点击正文图片以原图地址（外层 `a.lightbox` 的 `href`）打开灯箱；点图片、点空白、按 Esc、点右上角 × 均可关闭。
+- **原图灯箱**：点击正文图片或图片右下角的放大控件，均以原图地址（外层 `a.lightbox` 的 `href`）打开灯箱；点图片、点空白、按 Esc、点右上角 × 均可关闭。
 - **OP / ME 标识**：楼主所有楼层标注蓝色 `OP`，本人楼层标注绿色 `ME`。
 - **打开原帖**：头部一键在新标签页打开帖子原始页面。
 - **已读上报**：仅对**滚动进入视口并停留足够时间**的楼层，按真实阅读节奏调用 `topics/timings` 上报，使弹窗阅读也能计入 Connect 进度。
@@ -46,7 +46,7 @@
 | --- | --- |
 | 点击列表标题 | 弹窗预览该帖 |
 | 滚动弹窗 | 自动加载后续楼层，并按停留时长上报已读 |
-| 点击图片 | 原图灯箱查看，再次点击/Esc 关闭 |
+| 点击图片或放大控件 | 原图灯箱查看，再次点击/Esc 关闭 |
 | ♥ 按钮 | 点赞 / 取消赞 |
 | ↩ 回复 | 展开回复框，发送后插入楼中楼 |
 | ☆ 收藏本帖 | 收藏 / 取消收藏整帖 |
