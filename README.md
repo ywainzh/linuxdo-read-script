@@ -2,7 +2,7 @@
 
 > 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
-![version](https://img.shields.io/badge/version-1.1.4-blue)
+![version](https://img.shields.io/badge/version-1.1.5-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-red)](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)
@@ -16,6 +16,7 @@
 - **标题弹窗预览**：点击列表标题（含右上角用户菜单/通知面板中的话题链接）即在当前页弹窗打开，不跳转。
 - **楼中楼评论**：依据 `reply_to_post_number` 还原嵌套回复结构，缩进展示父子关系。
 - **滚动分页加载**：基于 `post_stream.stream` 分块按需加载，长帖首屏更快；底部哨兵 + `IntersectionObserver` 自动续加载。
+- **右侧时间轴**：弹窗内显示类似原帖的楼层进度、首尾日期与快捷按钮；可跳顶部、按日期定位，或一键加载并跳到最新回复。
 - **点赞 / 取消赞**：显示点赞数，支持一键点赞与取消（取消受 Discourse 时间窗限制）。
 - **楼内回复**：可对任意楼层回复，发送后即时插入为该楼的楼中楼子节点。
 - **整帖收藏 / 取消收藏**：调用 Discourse 书签接口。
@@ -46,6 +47,9 @@
 | --- | --- |
 | 点击列表标题 | 弹窗预览该帖 |
 | 滚动弹窗 | 自动加载后续楼层，并按停留时长上报已读 |
+| 右侧“最新” | 加载剩余楼层并跳到最新回复 |
+| 右侧当前楼层/日期 | 输入 `YYYY-MM-DD` 后跳到该日期附近的楼层 |
+| 右侧首尾日期 | 跳到顶部 / 加载并跳到底部 |
 | 点击图片或放大控件 | 原图灯箱查看，再次点击/Esc 关闭 |
 | ♥ 按钮 | 点赞 / 取消赞 |
 | ↩ 回复 | 展开回复框，发送后插入楼中楼 |
