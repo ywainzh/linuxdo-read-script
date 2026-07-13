@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.6
+// @version      1.1.7
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -29,6 +29,8 @@
 
   const MENU_PANEL_SEL = '.menu-panel, .user-menu, .quick-access-panel, .notifications';
   const SEARCH_SEL = '.search-results, .fps-result, .search-menu, .search-menu-container, .search-result-topic';
+  const USER_CARD_CACHE = new Map();
+  let CURRENT_USER_CARD = null;
 
   /* ============ 1. 样式 ============ */
   const style = document.createElement('style');
@@ -158,7 +160,37 @@
       100%{background:transparent;}
     }
     .ldp-post-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
-    .ldp-avatar{width:28px;height:28px;border-radius:50%;}
+    .ldp-avatar-btn{flex:none;width:28px;height:28px;padding:0;border:none;border-radius:50%;
+      background:transparent;color:inherit;cursor:pointer;position:relative;}
+    .ldp-avatar{width:28px;height:28px;border-radius:50%;display:block;}
+    .ldp-avatar-btn:hover .ldp-avatar{box-shadow:0 0 0 3px rgba(8,132,255,.18);}
+    .ldp-avatar-btn:focus-visible{outline:2px solid var(--tertiary,#08c);outline-offset:2px;}
+    .ldp-user-card{position:fixed;z-index:2147483300;width:min(390px,calc(100vw - 24px));
+      max-height:calc(100vh - 24px);overflow-y:auto;overscroll-behavior:contain;
+      border:1px solid var(--primary-low,#e5e5e5);border-radius:10px;
+      background:var(--secondary,#fff);color:var(--primary,#222);
+      box-shadow:0 18px 50px rgba(0,0,0,.24);font-size:14px;line-height:1.45;}
+    .ldp-user-card-cover{height:82px;background:
+      linear-gradient(135deg,rgba(8,132,255,.18),rgba(128,128,128,.08));background-size:cover;background-position:center;}
+    .ldp-user-card-body{padding:0 14px 14px;}
+    .ldp-user-card-main{display:flex;gap:12px;align-items:flex-end;margin-top:-34px;}
+    .ldp-user-card-avatar{width:76px;height:76px;padding:0;border:3px solid var(--secondary,#fff);
+      border-radius:50%;background:var(--secondary,#fff);cursor:pointer;flex:none;}
+    .ldp-user-card-avatar img{width:100%;height:100%;display:block;border-radius:50%;}
+    .ldp-user-card-avatar:hover{box-shadow:0 0 0 4px rgba(8,132,255,.18);}
+    .ldp-user-card-avatar:focus-visible{outline:2px solid var(--tertiary,#08c);outline-offset:2px;}
+    .ldp-user-card-name{min-width:0;padding-bottom:4px;}
+    .ldp-user-card-name strong{display:block;font-size:22px;line-height:1.1;}
+    .ldp-user-card-name span{display:block;opacity:.68;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .ldp-user-card-loading,.ldp-user-card-error{padding:16px;opacity:.72;}
+    .ldp-user-card-bio{margin:12px 0 0;color:var(--primary,#222);}
+    .ldp-user-card-meta{display:grid;gap:5px;margin:12px 0 0;font-size:13px;opacity:.82;}
+    .ldp-user-card-meta a{color:var(--tertiary,#08c);text-decoration:none;}
+    .ldp-user-card-meta a:hover{text-decoration:underline;}
+    .ldp-user-card-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;}
+    .ldp-user-card-stat{padding:8px;border-radius:8px;background:var(--primary-very-low,#f6f6f6);text-align:center;}
+    .ldp-user-card-stat strong{display:block;font-size:16px;line-height:1.2;}
+    .ldp-user-card-stat span{display:block;margin-top:2px;font-size:12px;opacity:.65;}
     .ldp-author{font-weight:600;}
     .ldp-op{font-size:11px;font-weight:700;color:#fff;background:var(--tertiary,#08c);
       border-radius:4px;padding:1px 6px;letter-spacing:.5px;}
@@ -293,6 +325,18 @@
   /* ============ 2. 工具 ============ */
   const esc = (s) => (s || '').replace(/[<>&]/g, (c) =>
       ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  const escAttr = (s) => esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  function stripHtml(html) {
+    if (!html) return '';
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    return (tmp.textContent || '').trim();
+  }
+
+  function resolveAvatar(template, size) {
+    return template ? absoluteUrl(template.replace('{size}', String(size || 96))) : '';
+  }
 
   function fmtTime(iso) {
     if (!iso) return '';
@@ -368,11 +412,10 @@
   function renderBoosts(boosts) {
     if (!boosts || !boosts.length) return '';
     return boosts.map((b) => {
-      const bAvatar = b.user && b.user.avatar_template
-          ? BASE + b.user.avatar_template.replace('{size}', '36') : '';
+      const bAvatar = b.user && resolveAvatar(b.user.avatar_template, 36);
       const canDel = !!b.can_delete;
       return `<div class="ldp-boost-bubble" data-boost-id="${b.id}">` +
-          (bAvatar ? `<img class="ldp-b-avatar" src="${bAvatar}" alt="">` : '') +
+          (bAvatar ? `<img class="ldp-b-avatar" src="${escAttr(bAvatar)}" alt="">` : '') +
           `<p>${b.cooked || ''}</p>` +
           (canDel ? `<button class="ldp-boost-del" title="删除此Boost">×</button>` : '') +
           `</div>`;
@@ -409,6 +452,161 @@
     document.addEventListener('keydown', onKey);
     document.body.appendChild(lb);
     closeBtn.focus({ preventScroll: true });
+  }
+
+  function absoluteUrl(url) {
+    if (!url) return '';
+    if (/^https?:\/\//i.test(url)) return url;
+    if (url.startsWith('//')) return `${location.protocol}${url}`;
+    return BASE + (url.startsWith('/') ? url : `/${url}`);
+  }
+
+  function userProfileUrl(username) {
+    return `${BASE}/u/${encodeURIComponent(username || '')}`;
+  }
+
+  function openUserProfile(username) {
+    if (!username) return;
+    window.open(userProfileUrl(username), '_blank', 'noopener');
+  }
+
+  function closeUserCard() {
+    if (!CURRENT_USER_CARD) return;
+    const { el, cleanup } = CURRENT_USER_CARD;
+    CURRENT_USER_CARD = null;
+    if (typeof cleanup === 'function') cleanup();
+    el.remove();
+  }
+
+  function positionUserCard(card, anchor) {
+    if (!card || !anchor) return;
+    if (!anchor.isConnected) {
+      closeUserCard();
+      return;
+    }
+    const rect = anchor.getBoundingClientRect();
+    const gap = 8;
+    const margin = 12;
+    const width = card.offsetWidth || 390;
+    const height = card.offsetHeight || 280;
+    let left = rect.left;
+    let top = rect.bottom + gap;
+    if (left + width > window.innerWidth - margin) left = window.innerWidth - width - margin;
+    if (top + height > window.innerHeight - margin) top = rect.top - height - gap;
+    card.style.left = `${Math.max(margin, left)}px`;
+    card.style.top = `${Math.max(margin, top)}px`;
+  }
+
+  function formatCount(n) {
+    const num = Number(n);
+    if (!Number.isFinite(num)) return '';
+    if (num >= 10000) return `${(num / 1000).toFixed(num >= 100000 ? 0 : 1)}k`;
+    return String(num);
+  }
+
+  function userCardStat(label, value) {
+    const text = formatCount(value);
+    return text ? `<div class="ldp-user-card-stat"><strong>${esc(text)}</strong><span>${esc(label)}</span></div>` : '';
+  }
+
+  function renderUserCard(user, username) {
+    const profileUsername = user.username || username;
+    const avatar = resolveAvatar(user.avatar_template, 160);
+    const cover = absoluteUrl(user.card_background_upload_url || user.profile_background_upload_url || '');
+    const name = user.name || profileUsername;
+    const title = user.title || user.primary_group_name || '';
+    const bio = stripHtml(user.bio_excerpt || user.bio_cooked || user.bio_raw || '');
+    const website = user.website || user.website_name || '';
+    const websiteUrl = website && (/^https?:\/\//i.test(website) ? website : `https://${website}`);
+    const locationText = user.location || (user.custom_fields && user.custom_fields.location) || '';
+    const summary = user.summary || {};
+    const statsHtml = [
+      userCardStat('帖子', user.post_count ?? summary.post_count),
+      userCardStat('主题', user.topic_count ?? summary.topic_count),
+      userCardStat('获赞', user.likes_received ?? summary.likes_received),
+    ].filter(Boolean).join('');
+    const meta = [
+      title ? `<div>头衔：${esc(title)}</div>` : '',
+      locationText ? `<div>位置：${esc(locationText)}</div>` : '',
+      website ? `<div>网站：<a href="${escAttr(websiteUrl)}" target="_blank" rel="noopener">${esc(website.replace(/^https?:\/\//i, ''))}</a></div>` : '',
+      user.created_at ? `<div>加入：${esc(fmtTime(user.created_at))}</div>` : '',
+    ].filter(Boolean).join('');
+
+    return `
+      <div class="ldp-user-card-cover"${cover ? ` style="background-image:linear-gradient(135deg,rgba(255,255,255,.55),rgba(255,255,255,.82)),url('${escAttr(cover)}')"` : ''}></div>
+      <div class="ldp-user-card-body">
+        <div class="ldp-user-card-main">
+          <button type="button" class="ldp-user-card-avatar" title="打开用户主页" aria-label="打开 ${escAttr(profileUsername)} 的用户主页" data-profile-username="${escAttr(profileUsername)}">
+            ${avatar ? `<img src="${escAttr(avatar)}" alt="">` : ''}
+          </button>
+          <div class="ldp-user-card-name">
+            <strong>${esc(name)}</strong>
+            <span>@${esc(profileUsername)}</span>
+          </div>
+        </div>
+        ${bio ? `<div class="ldp-user-card-bio">${esc(bio.slice(0, 140))}${bio.length > 140 ? '…' : ''}</div>` : ''}
+        ${meta ? `<div class="ldp-user-card-meta">${meta}</div>` : ''}
+        ${statsHtml ? `<div class="ldp-user-card-stats">${statsHtml}</div>` : ''}
+      </div>`;
+  }
+
+  async function openUserCard(username, anchor) {
+    if (!username || !anchor) return;
+    closeUserCard();
+    const card = document.createElement('div');
+    card.className = 'ldp-user-card';
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-label', `${username} 的个人详情`);
+    card.innerHTML = `<div class="ldp-user-card-loading">正在加载 @${esc(username)} 的个人详情…</div>`;
+    document.body.appendChild(card);
+    positionUserCard(card, anchor);
+
+    const closeOnOutside = (e) => {
+      if (card.contains(e.target) || anchor.contains(e.target)) return;
+      closeUserCard();
+    };
+    const closeOnEsc = (e) => { if (e.key === 'Escape') closeUserCard(); };
+    const reposition = () => positionUserCard(card, anchor);
+    const cleanup = () => {
+      document.removeEventListener('click', closeOnOutside, true);
+      document.removeEventListener('keydown', closeOnEsc);
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+    };
+    CURRENT_USER_CARD = { el: card, cleanup };
+    setTimeout(() => {
+      if (CURRENT_USER_CARD && CURRENT_USER_CARD.el === card) {
+        document.addEventListener('click', closeOnOutside, true);
+      }
+    }, 0);
+    document.addEventListener('keydown', closeOnEsc);
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+
+    card.addEventListener('click', (e) => {
+      const avatarBtn = e.target.closest('.ldp-user-card-avatar');
+      if (!avatarBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openUserProfile(avatarBtn.dataset.profileUsername || username);
+      closeUserCard();
+    });
+
+    try {
+      let data = USER_CARD_CACHE.get(username);
+      if (!data) {
+        data = await fetchJSON(`${BASE}/u/${encodeURIComponent(username)}/card.json`);
+        USER_CARD_CACHE.set(username, data);
+      }
+      if (!CURRENT_USER_CARD || CURRENT_USER_CARD.el !== card) return;
+      const user = data.user || data;
+      card.innerHTML = renderUserCard(user, username);
+      positionUserCard(card, anchor);
+    } catch (err) {
+      if (!CURRENT_USER_CARD || CURRENT_USER_CARD.el !== card) return;
+      card.innerHTML = `<div class="ldp-user-card-error">个人详情加载失败：${esc(err.message)}</div>`;
+      positionUserCard(card, anchor);
+    }
   }
 
   function isElement(node) {
@@ -671,8 +869,7 @@
 
   /* ============ 7. 渲染单条 ============ */
   function renderPost(p, isReply, ctx) {
-    const avatar = p.avatar_template
-        ? BASE + p.avatar_template.replace('{size}', '48') : '';
+    const avatar = resolveAvatar(p.avatar_template, 48);
     const { count, acted, canAct } = likeInfo(p);
     const isOP = ctx.op && p.username === ctx.op;
     const isME = ME_USERNAME && p.username === ME_USERNAME;
@@ -702,7 +899,7 @@
     node.dataset.createdAt = p.created_at || '';
     node.innerHTML = `
       <div class="ldp-post-head">
-        ${avatar ? `<img class="ldp-avatar" src="${avatar}" alt="" loading="lazy" decoding="async">` : ''}
+        ${avatar ? `<button type="button" class="ldp-avatar-btn" title="查看 ${escAttr(p.username)} 的个人详情" aria-label="查看 ${escAttr(p.username)} 的个人详情" data-username="${escAttr(p.username)}"><img class="ldp-avatar" src="${escAttr(avatar)}" alt="" loading="lazy" decoding="async"></button>` : ''}
         <span class="ldp-author">${esc(p.name || p.username)}</span>
         <span class="ldp-user">@${esc(p.username)}</span>
         ${isOP ? '<span class="ldp-op">OP</span>' : ''}
@@ -850,6 +1047,14 @@
       const anchor = e.target.closest('a');
       if (anchor && anchor.target === '_blank') return;
 
+      const avatarBtn = e.target.closest('.ldp-avatar-btn');
+      if (avatarBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        openUserCard(avatarBtn.dataset.username, avatarBtn);
+        return;
+      }
+
       // 楼中楼“展示更多回复”按钮
       const moreBtn = e.target.closest('.ldp-load-more-replies');
       if (moreBtn) {
@@ -922,13 +1127,12 @@
             // 追加新气泡
             const listEl = postNode.querySelector(':scope > .ldp-boosts-list');
             if (listEl) {
-              const bAvatar = res.user && res.user.avatar_template
-                  ? BASE + res.user.avatar_template.replace('{size}', '36') : '';
+              const bAvatar = res.user && resolveAvatar(res.user.avatar_template, 36);
               const newBubble = document.createElement('div');
               newBubble.className = 'ldp-boost-bubble ldp-flash';
               newBubble.dataset.boostId = res.id;
               newBubble.innerHTML =
-                  (bAvatar ? `<img class="ldp-b-avatar" src="${bAvatar}" alt="">` : '') +
+                  (bAvatar ? `<img class="ldp-b-avatar" src="${escAttr(bAvatar)}" alt="">` : '') +
                   `<p>${res.cooked || ''}</p>` +
                   `<button class="ldp-boost-del" title="删除此Boost">×</button>`;
               listEl.appendChild(newBubble);
@@ -1267,6 +1471,7 @@
   let CURRENT_OVERLAY = null;
 
   async function openModal(topicId) {
+    closeUserCard();
     if (CURRENT_OVERLAY) { CURRENT_OVERLAY.remove(); CURRENT_OVERLAY = null; }
     const overlay = document.createElement('div');
     overlay.className = 'ldp-overlay';
@@ -1351,9 +1556,18 @@
     let loading = false, done = false, pendingRetry = false, forcePumpAll = false;
     let loadingPromise = Promise.resolve();
 
-    const close = () => { tracker.stop(); ctx.repliesIO.disconnect(); overlay.remove(); if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null; document.removeEventListener('keydown', onEsc); };
+    const close = () => {
+      closeUserCard();
+      tracker.stop();
+      ctx.repliesIO.disconnect();
+      overlay.remove();
+      if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null;
+      document.removeEventListener('keydown', onEsc);
+    };
     function onEsc(e) {
-      if (e.key === 'Escape' && !document.querySelector('.ldp-lightbox')) close();
+      if (e.key !== 'Escape') return;
+      if (document.querySelector('.ldp-lightbox') || CURRENT_USER_CARD) return;
+      close();
     }
     overlay.querySelector('.ldp-close').addEventListener('click', close);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
