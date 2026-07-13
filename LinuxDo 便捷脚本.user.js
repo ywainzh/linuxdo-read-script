@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.5
+// @version      1.1.6
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -49,17 +49,20 @@
       line-height:1;color:inherit;padding:0 4px;}
     .ldp-shell{flex:1;min-height:0;position:relative;display:flex;}
     .ldp-body{flex:1;min-width:0;min-height:0;position:relative;
-      padding:8px 20px 20px;overflow-y:auto;overscroll-behavior:contain;}
+      padding:8px 20px 20px;overflow-y:auto;overscroll-behavior:contain;
+      scrollbar-width:none;}
+    .ldp-body::-webkit-scrollbar{width:0;height:0;}
 
     /* 右侧时间轴 */
     .ldp-timeline{flex:0 0 96px;display:flex;flex-direction:column;align-items:center;
       gap:8px;padding:12px 10px;border-left:1px solid var(--primary-low,#eee);
       background:var(--secondary,#fff);color:var(--primary-medium,#666);}
-    .ldp-tl-date,.ldp-tl-current,.ldp-tl-btn{cursor:pointer;border:none;
+    .ldp-tl-date,.ldp-tl-current{border:none;
       background:transparent;color:inherit;font:inherit;}
+    .ldp-tl-date{cursor:pointer;}
     .ldp-tl-date{width:100%;min-height:36px;padding:4px 2px;border-radius:6px;
       font-size:13px;line-height:1.25;text-align:center;}
-    .ldp-tl-date:hover,.ldp-tl-current:hover,.ldp-tl-btn:hover{
+    .ldp-tl-date:hover{
       background:var(--primary-low,#f0f0f0);color:var(--tertiary,#08c);}
     .ldp-tl-current{width:100%;min-height:58px;padding:5px 2px;border-radius:6px;
       line-height:1.25;text-align:center;}
@@ -74,15 +77,8 @@
     .ldp-tl-thumb{position:absolute;left:50%;top:8px;width:14px;height:14px;
       transform:translate(-50%,-50%);border-radius:50%;background:var(--tertiary,#08c);
       box-shadow:0 0 0 4px rgba(8,132,255,.14);}
-    .ldp-tl-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;width:100%;}
-    .ldp-tl-latest{grid-column:1 / -1;}
-    .ldp-tl-btn{display:grid;min-height:40px;place-items:center;border-radius:6px;
-      border:1px solid var(--primary-low,#e0e0e0);font-size:12px;line-height:1.1;}
-    .ldp-tl-btn svg{width:17px;height:17px;fill:currentColor;}
-    .ldp-tl-btn[disabled]{cursor:default;opacity:.45;pointer-events:none;}
-    .ldp-tl-loading .ldp-tl-latest{opacity:.6;pointer-events:none;}
-    .ldp-tl-date:focus-visible,.ldp-tl-current:focus-visible,
-    .ldp-tl-track:focus-visible,.ldp-tl-btn:focus-visible{
+    .ldp-tl-loading .ldp-tl-bottom-date{opacity:.6;pointer-events:none;}
+    .ldp-tl-date:focus-visible,.ldp-tl-track:focus-visible{
       outline:2px solid var(--tertiary,#08c);outline-offset:2px;}
     @media (max-width: 760px){
       .ldp-modal{width:96%;height:92vh;}
@@ -93,8 +89,6 @@
       .ldp-tl-date{font-size:11px;}
       .ldp-tl-current strong{font-size:13px;}
       .ldp-tl-current span{display:none;}
-      .ldp-tl-actions{grid-template-columns:1fr;}
-      .ldp-tl-latest{grid-column:auto;}
     }
 
     /* 底部悬浮操作栏 */
@@ -1156,15 +1150,11 @@
     const body = ctx.scrollRoot;
     const topDateBtn = rail.querySelector('.ldp-tl-top-date');
     const bottomDateBtn = rail.querySelector('.ldp-tl-bottom-date');
-    const currentBtn = rail.querySelector('.ldp-tl-current');
     const currentText = rail.querySelector('.ldp-tl-current-post');
     const currentDate = rail.querySelector('.ldp-tl-current-date');
     const track = rail.querySelector('.ldp-tl-track');
     const fill = rail.querySelector('.ldp-tl-fill');
     const thumb = rail.querySelector('.ldp-tl-thumb');
-    const latestBtn = rail.querySelector('.ldp-tl-latest');
-    const replyBtn = rail.querySelector('.ldp-tl-reply');
-    const bookmarkBtn = rail.querySelector('.ldp-tl-bookmark');
     const totalPosts = Math.max(1, topic.posts_count || ctx.totalComments + 1);
     let raf = 0;
     let loadingLatest = false;
@@ -1200,7 +1190,7 @@
       const postNumber = post ? (+post.dataset.postNumber || 1) : 1;
       currentText.textContent = `${postNumber} / ${totalPosts}`;
       currentDate.textContent = post ? (fmtDate(post.dataset.createdAt) || '当前') : '当前';
-      latestBtn.disabled = loadingLatest;
+      bottomDateBtn.disabled = loadingLatest;
     };
 
     const schedule = () => {
@@ -1209,11 +1199,6 @@
         raf = 0;
         setProgress();
       });
-    };
-
-    const scrollToNode = (node) => {
-      if (!node) return;
-      node.scrollIntoView({ behavior: 'smooth', block: 'start' });
     };
 
     const jumpTop = () => body.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1232,27 +1217,6 @@
       }
     };
 
-    const jumpToDate = async () => {
-      const current = visiblePost();
-      const fallback = ((current && current.dataset.createdAt) || topic.created_at || '').slice(0, 10);
-      const raw = prompt('跳转到日期（YYYY-MM-DD）', fallback);
-      if (!raw) return;
-      const target = new Date(`${raw}T00:00:00`);
-      if (isNaN(target.getTime())) {
-        alert('日期格式不正确，请使用 YYYY-MM-DD');
-        return;
-      }
-
-      await controls.loadAll();
-      const targetTime = target.getTime();
-      const list = posts();
-      const node = list.find((post) => {
-        const created = new Date(post.dataset.createdAt || '').getTime();
-        return !isNaN(created) && created >= targetTime;
-      }) || list[list.length - 1];
-      scrollToNode(node);
-    };
-
     const jumpByRatio = (ratio) => {
       const max = Math.max(0, body.scrollHeight - body.clientHeight);
       body.scrollTo({ top: max * Math.max(0, Math.min(1, ratio)), behavior: 'smooth' });
@@ -1260,10 +1224,6 @@
 
     topDateBtn.addEventListener('click', jumpTop);
     bottomDateBtn.addEventListener('click', jumpBottom);
-    latestBtn.addEventListener('click', jumpBottom);
-    currentBtn.addEventListener('click', jumpToDate);
-    replyBtn.addEventListener('click', () => controls.replyBtn.click());
-    bookmarkBtn.addEventListener('click', () => controls.bookmarkBtn.click());
     track.addEventListener('click', (e) => {
       const rect = track.getBoundingClientRect();
       jumpByRatio((e.clientY - rect.top) / Math.max(1, rect.height));
@@ -1332,25 +1292,16 @@
           </div>
           <aside class="ldp-timeline" aria-label="帖子时间轴">
             <button type="button" class="ldp-tl-date ldp-tl-top-date" title="跳到顶部">顶部</button>
-            <button type="button" class="ldp-tl-current" title="按日期跳转">
+            <div class="ldp-tl-current" aria-label="当前楼层">
               <strong class="ldp-tl-current-post">1 / 1</strong>
               <span class="ldp-tl-current-date">当前</span>
-            </button>
+            </div>
             <button type="button" class="ldp-tl-track" role="slider" aria-label="滚动位置"
               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
               <span class="ldp-tl-fill"></span>
               <span class="ldp-tl-thumb"></span>
             </button>
             <button type="button" class="ldp-tl-date ldp-tl-bottom-date" title="加载并跳到最新回复">底部</button>
-            <div class="ldp-tl-actions">
-              <button type="button" class="ldp-tl-btn ldp-tl-reply" title="回复帖子">
-                <svg viewBox="0 0 1024 1024" fill="currentColor">${ICONS.reply}</svg>
-              </button>
-              <button type="button" class="ldp-tl-btn ldp-tl-bookmark" title="收藏本帖">
-                <svg viewBox="0 0 24 24" fill="currentColor">${ICONS.bookmark}</svg>
-              </button>
-              <button type="button" class="ldp-tl-btn ldp-tl-latest" title="加载并跳到最新回复">最新</button>
-            </div>
           </aside>
         </div>
         <div class="ldp-footer" hidden>
@@ -1492,8 +1443,6 @@
       footerEl.hidden = false;
       ctx.onPostsChanged = bindTimeline(modal, ctx, topic, {
         loadAll: () => pump(true),
-        replyBtn: fReplyBtn,
-        bookmarkBtn: fBookmarkBtn,
       });
 
       bindActions(modal, ctx);
