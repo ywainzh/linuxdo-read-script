@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         LinuxDo 增强阅读
+// @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
 // @version      1.1.1
 // @license      MIT

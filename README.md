@@ -1,8 +1,7 @@
-# LinuxDo 增强阅读 · 帖子弹窗预览脚本
+# LinuxDo 便捷脚本
 
 > 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
-[![](https://img.shields.io/badge/github-repo-blue?logo=github)](https://github.com/fashionzzZ/linuxdo-read-script)
 ![version](https://img.shields.io/badge/version-1.1.1-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
@@ -27,7 +26,7 @@
 ## 安装
 
 1. 安装用户脚本管理器：[Tampermonkey](https://www.tampermonkey.net/) 或 [Violentmonkey](https://violentmonkey.github.io/)。
-2. [安装脚本](https://update.greasyfork.org/scripts/584412/LinuxDo%20%E5%A2%9E%E5%BC%BA%E9%98%85%E8%AF%BB.user.js)
+2. 在用户脚本管理器中新建脚本，粘贴本仓库的 `.user.js` 文件内容并保存。
 3. 刷新 `https://linux.do` 任意页面即可生效。
 
 ## 使用说明
