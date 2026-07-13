@@ -5,6 +5,7 @@
 ![version](https://img.shields.io/badge/version-1.1.1-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
+[![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-red)](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)
 
 ## 简介
 
@@ -26,7 +27,7 @@
 ## 安装
 
 1. 安装用户脚本管理器：[Tampermonkey](https://www.tampermonkey.net/) 或 [Violentmonkey](https://violentmonkey.github.io/)。
-2. 在用户脚本管理器中新建脚本，粘贴本仓库的 `.user.js` 文件内容并保存。
+2. 打开 [Greasy Fork 脚本页](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC) 并点击安装。
 3. 刷新 `https://linux.do` 任意页面即可生效。
 
 ## 使用说明
