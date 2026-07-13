@@ -30,6 +30,16 @@
 2. 打开 [Greasy Fork 脚本页](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC) 并点击安装。
 3. 刷新 `https://linux.do` 任意页面即可生效。
 
+## 发布更新
+
+仓库内提供了一个 Greasy Fork 发布助手：[tools/greasyfork-update-helper.user.js](./tools/greasyfork-update-helper.user.js)。
+先安装 [Greasy Fork 发布助手](https://raw.githubusercontent.com/ywainzh/linuxdo-read-script/main/tools/greasyfork-update-helper.user.js)，后续更新流程：
+
+1. 修改 `LinuxDo 便捷脚本.user.js`，并递增脚本头里的 `@version`。
+2. 提交并推送到 GitHub `main` 分支。
+3. 打开 [Greasy Fork 脚本页](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)，点击页面右下角的“拉取 GitHub 最新版并发布”。
+4. 如 Greasy Fork 要求登录或 GitHub 授权，按页面提示完成即可，发布助手会继续处理后续步骤。
+
 ## 使用说明
 
 | 操作 | 效果 |
