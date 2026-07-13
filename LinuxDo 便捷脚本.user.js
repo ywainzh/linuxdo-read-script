@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.3
+// @version      1.1.4
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -370,9 +370,18 @@
     closeBtn.focus({ preventScroll: true });
   }
 
+  function isElement(node) {
+    return node && node.nodeType === Node.ELEMENT_NODE;
+  }
+
+  function closestElement(node, selector) {
+    const el = isElement(node) ? node : node && node.parentElement;
+    return el ? el.closest(selector) : null;
+  }
+
   function isImageAnchor(anchor) {
     if (!anchor) return false;
-    const href = anchor.getAttribute('href') || '';
+    const href = anchor.getAttribute('href') || anchor.getAttribute('data-download-href') || '';
     return anchor.classList.contains('lightbox') ||
       anchor.hasAttribute('data-download-href') ||
       /\.(png|jpe?g|gif|webp|bmp|avif)(\?|#|$)/i.test(href);
@@ -388,6 +397,38 @@
       if (href) return href;
     }
     return imgEl && (imgEl.getAttribute('data-large-src') || imgEl.currentSrc || imgEl.src);
+  }
+
+  function findImagePreviewSource(target, root) {
+    const content = closestElement(target, '.ldp-content');
+    if (!content || !root.contains(content)) return null;
+
+    const anchor = closestElement(target, 'a[href], a[data-download-href]');
+    if (anchor && content.contains(anchor) && isImageAnchor(anchor)) return anchor;
+
+    const img = closestElement(target, 'img');
+    if (img && content.contains(img)) return img;
+
+    const wrapper = closestElement(target, '.lightbox-wrapper, .image-wrapper, .image-container, .lazyYT-container');
+    if (!wrapper || !content.contains(wrapper)) return null;
+
+    const wrapperAnchor = wrapper.querySelector('a.lightbox, a[data-download-href], a[href]');
+    if (isImageAnchor(wrapperAnchor)) return wrapperAnchor;
+
+    return wrapper.querySelector('img');
+  }
+
+  function interceptImagePreviewClick(e, root) {
+    const source = findImagePreviewSource(e.target, root);
+    if (!source) return false;
+    const src = resolveOriginalSrc(source);
+    if (!src) return false;
+
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+    openLightbox(src);
+    return true;
   }
 
   /* ============ 4. 已读追踪器 ============ */
@@ -745,17 +786,14 @@
 
   /* ============ 10. 事件委托 ============ */
   function bindActions(modal, ctx) {
+    // 先于站点和浏览器默认链接行为接管 Discourse 图片、黑色信息条和右下角放大控件。
+    modal.addEventListener('click', (e) => {
+      interceptImagePreviewClick(e, modal);
+    }, true);
+
     modal.addEventListener('click', async (e) => {
       // 图片本体及其文件名/尺寸/右下角放大控件统一使用脚本灯箱，避免跳转到 CDN 原图页
-      const img = e.target.closest('.ldp-content img');
-      const contentAnchor = e.target.closest('.ldp-content a[href], .ldp-content a[data-download-href]');
-      const imageAnchor = isImageAnchor(contentAnchor) ? contentAnchor : null;
-      if (img || imageAnchor) {
-        e.preventDefault();
-        e.stopPropagation();
-        openLightbox(resolveOriginalSrc(imageAnchor || img));
-        return;
-      }
+      if (interceptImagePreviewClick(e, modal)) return;
 
       // 允许内容区 <a target="_blank"> 正常跳转
       const anchor = e.target.closest('a');
