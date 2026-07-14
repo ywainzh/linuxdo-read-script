@@ -57,7 +57,7 @@
 
     /* 右侧时间轴 */
     .ldp-timeline{flex:0 0 96px;display:flex;flex-direction:column;align-items:center;
-      gap:8px;padding:12px 10px;border-left:1px solid var(--primary-low,#eee);
+      gap:8px;padding:12px 10px;
       background:var(--secondary,#fff);color:var(--primary-medium,#666);}
     .ldp-tl-date,.ldp-tl-current{border:none;
       background:transparent;color:inherit;font:inherit;}
@@ -200,13 +200,41 @@
     .ldp-time{font-size:12px;opacity:.55;}
     .ldp-floor{font-size:12px;opacity:.5;margin-left:auto;
       padding-left:8px;white-space:nowrap;}
-    .ldp-unread-dot{display:none;flex:none;width:8px;height:8px;border-radius:50%;
+    .ldp-unread-dot{display:inline-block;visibility:hidden;flex:none;width:8px;height:8px;border-radius:50%;
       background:#55c7f7;box-shadow:0 0 0 3px rgba(85,199,247,.18);
       margin-left:2px;}
-    .ldp-post.ldp-unread > .ldp-post-head .ldp-unread-dot{display:inline-block;}
+    .ldp-post.ldp-unread > .ldp-post-head .ldp-unread-dot{visibility:visible;}
     .ldp-content img{max-width:100%;height:auto;cursor:zoom-in;border-radius:4px;}
     .ldp-content pre{overflow:auto;background:var(--primary-very-low,#f6f6f6);
       padding:10px;border-radius:6px;}
+
+    /* Base64 解码 */
+    .ldp-base64-selection-menu{position:fixed;z-index:2147483550;display:block;
+      padding:4px;border:1px solid var(--primary-low,#ddd);border-radius:7px;
+      background:var(--secondary,#fff);color:var(--primary,#222);
+      box-shadow:0 8px 24px rgba(0,0,0,.2);}
+    .ldp-base64-selection-menu[hidden]{display:none;}
+    .ldp-base64-selection-menu button{display:flex;align-items:center;gap:6px;
+      min-height:32px;padding:5px 10px;border:none;border-radius:5px;cursor:pointer;
+      background:transparent;color:inherit;font:inherit;font-size:13px;white-space:nowrap;}
+    .ldp-base64-selection-menu button:hover{background:var(--primary-low,#eee);}
+    .ldp-base64-result{position:relative;margin:8px 0;
+      border:1px solid var(--primary-low,#ddd);border-radius:7px;
+      background:var(--primary-very-low,#f6f6f6);color:var(--primary,#222);}
+    .ldp-base64-result pre{max-height:420px;margin:0;padding:38px 12px 12px;
+      overflow:auto;border:none;border-radius:inherit;background:transparent;
+      color:inherit;white-space:pre-wrap;overflow-wrap:anywhere;}
+    .ldp-base64-result code{font-family:ui-monospace,SFMono-Regular,Consolas,
+      "Liberation Mono",monospace;}
+    .ldp-base64-toolbar{position:absolute;top:5px;right:5px;z-index:1;
+      display:flex;gap:4px;}
+    .ldp-base64-toolbar button{min-width:30px;height:28px;padding:3px 8px;
+      border:1px solid var(--primary-low,#ddd);border-radius:5px;cursor:pointer;
+      background:var(--secondary,#fff);color:var(--primary-medium,#666);
+      font:inherit;font-size:12px;line-height:1;}
+    .ldp-base64-toolbar button:hover{color:var(--tertiary,#08c);
+      background:var(--primary-low,#eee);}
+    .ldp-base64-toolbar button:disabled{cursor:default;opacity:.7;}
     .ldp-children{margin-left:22px;
       border-left:1px solid var(--tertiary,#08c);}
     .ldp-actions{display:flex;gap:14px;margin-top:8px;font-size:12px;align-items:center;}
@@ -681,11 +709,301 @@
     return true;
   }
 
+  /* ============ 3.5 Base64 解码 ============ */
+  function decodeBase64ToUnicode(raw) {
+    const normalized = String(raw || '').trim().replace(/\s+/g, '');
+    if (!normalized) return null;
+    try {
+      const binary = atob(normalized);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return new TextDecoder('utf-8').decode(bytes);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise((resolve, reject) => {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      Object.assign(textarea.style, {
+        position: 'fixed', left: '-9999px', top: '0', opacity: '0',
+      });
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        if (!document.execCommand('copy')) throw new Error('copy failed');
+        resolve();
+      } catch (e) {
+        reject(e);
+      } finally {
+        textarea.remove();
+      }
+    });
+  }
+
+  function createDecodedBlock(decodedText) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'ldp-base64-result';
+    wrapper.setAttribute('data-base64-decoded', 'true');
+
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    code.textContent = decodedText;
+    pre.appendChild(code);
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'ldp-base64-toolbar';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.textContent = '复制';
+    copyBtn.title = '复制解码文本';
+    copyBtn.setAttribute('aria-label', '复制解码文本');
+    copyBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      copyBtn.disabled = true;
+      try {
+        await copyText(decodedText);
+        copyBtn.textContent = '已复制';
+        setTimeout(() => {
+          if (!copyBtn.isConnected) return;
+          copyBtn.textContent = '复制';
+          copyBtn.disabled = false;
+        }, 2000);
+      } catch (err) {
+        copyBtn.disabled = false;
+        alert('复制失败，请手动复制');
+      }
+    });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = '×';
+    closeBtn.title = '关闭';
+    closeBtn.setAttribute('aria-label', '关闭解码结果');
+    closeBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      wrapper.remove();
+    });
+
+    toolbar.append(copyBtn, closeBtn);
+    wrapper.append(pre, toolbar);
+    return wrapper;
+  }
+
+  function insertDecodedBlock(decodedText, range) {
+    if (!range || !range.commonAncestorContainer || !range.commonAncestorContainer.isConnected) return null;
+    const wrapper = createDecodedBlock(decodedText);
+    const endEl = isElement(range.endContainer) ? range.endContainer : range.endContainer.parentElement;
+    const contentRoot = endEl && endEl.closest('.ldp-content, .topic-post .cooked, article .cooked');
+    const block = endEl && endEl.closest('p, pre, blockquote');
+
+    if (contentRoot && block && contentRoot.contains(block)) {
+      block.insertAdjacentElement('afterend', wrapper);
+    } else if (contentRoot) {
+      let anchor = endEl;
+      while (anchor && anchor.parentElement && anchor.parentElement !== contentRoot) {
+        anchor = anchor.parentElement;
+      }
+      if (anchor && anchor.parentElement === contentRoot) {
+        if (anchor.tagName === 'LI') anchor.appendChild(wrapper);
+        else anchor.insertAdjacentElement('afterend', wrapper);
+      } else {
+        contentRoot.appendChild(wrapper);
+      }
+    } else {
+      const insertionRange = range.cloneRange();
+      insertionRange.collapse(false);
+      insertionRange.insertNode(wrapper);
+    }
+
+    const selection = window.getSelection();
+    if (selection) selection.removeAllRanges();
+    wrapper.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    return wrapper;
+  }
+
+  function getSelectionSnapshot(requiredRoot) {
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || selection.isCollapsed) return null;
+    const raw = selection.toString().trim();
+    if (!raw) return null;
+    const range = selection.getRangeAt(0);
+    if (requiredRoot) {
+      const startEl = isElement(range.startContainer) ? range.startContainer : range.startContainer.parentElement;
+      const endEl = isElement(range.endContainer) ? range.endContainer : range.endContainer.parentElement;
+      const startContent = startEl && startEl.closest('.ldp-content');
+      const endContent = endEl && endEl.closest('.ldp-content');
+      if (!startContent || startContent !== endContent || !requiredRoot.contains(startContent)) return null;
+    }
+    return { raw, range: range.cloneRange() };
+  }
+
+  function decodeSelectionSnapshot(snapshot) {
+    if (!snapshot) {
+      alert('请先选中一段 Base64 文本');
+      return false;
+    }
+    const decoded = decodeBase64ToUnicode(snapshot.raw);
+    if (decoded === null) {
+      alert('解码失败，请确认内容是有效的 Base64 编码');
+      return false;
+    }
+    return !!insertDecodedBlock(decoded, snapshot.range);
+  }
+
+  function addBase64DecodeButton(menu) {
+    if (!menu) return;
+    const existingButton = Array.from(menu.querySelectorAll('button')).find((button) =>
+      button.classList.contains('ldp-base64-decode-btn') ||
+      button.title === 'Base64 解码' ||
+      (button.querySelector('.d-button-label') || {}).textContent === 'Base64解码'
+    );
+    if (existingButton) {
+      menu.dataset.base64DecodeAdded = 'true';
+      return;
+    }
+    const buttons = menu.querySelector('.quote-button .buttons') || menu.querySelector('.buttons');
+    if (!buttons) return;
+
+    menu.dataset.base64DecodeAdded = 'true';
+    const decodeBtn = document.createElement('button');
+    decodeBtn.type = 'button';
+    decodeBtn.className = 'btn btn-icon-text btn-flat ldp-base64-decode-btn';
+    decodeBtn.title = 'Base64 解码';
+    decodeBtn.innerHTML = '<span class="fa d-icon" aria-hidden="true">🔓</span><span class="d-button-label">Base64解码</span>';
+
+    let snapshot = null;
+    decodeBtn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      snapshot = getSelectionSnapshot();
+    });
+    decodeBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      decodeSelectionSnapshot(snapshot || getSelectionSnapshot());
+      snapshot = null;
+    });
+    buttons.appendChild(decodeBtn);
+  }
+
+  function startBase64MenuObserver() {
+    const portal = document.getElementById('d-menu-portals');
+    if (!portal) {
+      setTimeout(startBase64MenuObserver, 500);
+      return;
+    }
+
+    portal.querySelectorAll('div.fk-d-menu').forEach(addBase64DecodeButton);
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (!isElement(node)) return;
+          const parentMenu = node.matches('div.fk-d-menu') ? node : node.closest('div.fk-d-menu');
+          if (parentMenu) addBase64DecodeButton(parentMenu);
+          node.querySelectorAll('div.fk-d-menu').forEach(addBase64DecodeButton);
+        });
+      });
+    });
+    observer.observe(portal, { childList: true, subtree: true });
+  }
+
+  function bindModalBase64Selection(modal) {
+    const menu = document.createElement('div');
+    menu.className = 'ldp-base64-selection-menu';
+    menu.hidden = true;
+    menu.innerHTML = '<button type="button" title="Base64 解码"><span aria-hidden="true">🔓</span><span>Base64解码</span></button>';
+    document.body.appendChild(menu);
+
+    const button = menu.querySelector('button');
+    const scrollRoot = modal.querySelector('.ldp-body');
+    let snapshot = null;
+    let frame = 0;
+
+    const hide = () => {
+      menu.hidden = true;
+      snapshot = null;
+    };
+    const show = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const current = getSelectionSnapshot(modal);
+        if (!current) {
+          hide();
+          return;
+        }
+        snapshot = current;
+        const rect = current.range.getBoundingClientRect();
+        if (!rect || (!rect.width && !rect.height)) {
+          hide();
+          return;
+        }
+        menu.hidden = false;
+        const width = menu.offsetWidth;
+        const height = menu.offsetHeight;
+        const left = Math.max(8, Math.min(window.innerWidth - width - 8,
+          rect.left + (rect.width / 2) - (width / 2)));
+        let top = rect.top - height - 8;
+        if (top < 8) top = Math.min(window.innerHeight - height - 8, rect.bottom + 8);
+        menu.style.left = `${left}px`;
+        menu.style.top = `${Math.max(8, top)}px`;
+      });
+    };
+    const onPointerDown = (e) => {
+      if (menu.contains(e.target)) return;
+      hide();
+    };
+    const onKeyDown = (e) => {
+      if (e.key !== 'Escape' || menu.hidden) return;
+      e.preventDefault();
+      e.stopPropagation();
+      hide();
+    };
+    const onKeyUp = (e) => {
+      if (e.shiftKey || e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') show();
+    };
+
+    button.addEventListener('pointerdown', (e) => e.preventDefault());
+    button.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const current = snapshot;
+      hide();
+      decodeSelectionSnapshot(current);
+    });
+    modal.addEventListener('mouseup', show);
+    modal.addEventListener('keyup', onKeyUp);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('resize', hide);
+    if (scrollRoot) scrollRoot.addEventListener('scroll', hide, { passive: true });
+
+    return () => {
+      cancelAnimationFrame(frame);
+      menu.remove();
+      modal.removeEventListener('mouseup', show);
+      modal.removeEventListener('keyup', onKeyUp);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('resize', hide);
+      if (scrollRoot) scrollRoot.removeEventListener('scroll', hide);
+    };
+  }
+
   /* ============ 4. 已读追踪器 ============ */
   function createReadTracker(topicId, scrollRoot) {
     const dwell = new Map();
     const reported = new Map();
     const visible = new Set();
+    let readWaterline = 1;
     let lastTick = Date.now();
     let tickTimer = null, flushTimer = null;
 
@@ -707,12 +1025,14 @@
       }
     };
 
-    const markRead = (pn) => {
-      const node = scrollRoot.querySelector(`.ldp-post[data-post-number="${pn}"]`);
-      if (node) {
+    const markReadThrough = (pn) => {
+      readWaterline = Math.max(readWaterline, Number(pn) || 1);
+      scrollRoot.querySelectorAll('.ldp-post[data-post-number]').forEach((node) => {
+        const nodePn = +node.dataset.postNumber;
+        if (!nodePn || nodePn > readWaterline) return;
         node.classList.add('ldp-read');
         node.classList.remove('ldp-unread');
-      }
+      });
     };
 
     const flush = async () => {
@@ -731,10 +1051,12 @@
       params.topic_time = total;
       try {
         await apiSend(`${BASE}/topics/timings`, 'POST', params, { 'X-SILENCE-LOGGER': 'true' });
+        let maxReadPostNumber = 0;
         Object.keys(params).forEach((k) => {
           const m = k.match(/^timings\[(\d+)\]$/);
-          if (m) markRead(+m[1]);
+          if (m) maxReadPostNumber = Math.max(maxReadPostNumber, +m[1]);
         });
+        if (maxReadPostNumber) markReadThrough(maxReadPostNumber);
       } catch (e) {
         Object.keys(params).forEach((k) => {
           const m = k.match(/^timings\[(\d+)\]$/);
@@ -744,6 +1066,8 @@
     };
 
     return {
+      getReadWaterline() { return readWaterline; },
+      setReadWaterline(pn) { readWaterline = Math.max(1, Number(pn) || 0); },
       observe(node) { if (node) io.observe(node); },
       start() {
         lastTick = Date.now();
@@ -899,7 +1223,9 @@
     const boostsHtml = renderBoosts(p.boosts || []);
     const canBoost = p.can_boost === true;
 
-    const lastReadPostNumber = Math.max(1, Number(ctx.lastReadPostNumber) || 0);
+    const lastReadPostNumber = Math.max(1, Number(
+      ctx.tracker && ctx.tracker.getReadWaterline ? ctx.tracker.getReadWaterline() : ctx.lastReadPostNumber
+    ) || 0);
     const isUnread = !p._ldpSkipUnread && p.post_number > lastReadPostNumber;
 
     const node = document.createElement('div');
@@ -1554,6 +1880,7 @@
     const fReplyBtn = overlay.querySelector('.ldp-f-reply'), fReplyCountEl = overlay.querySelector('.ldp-f-reply-count');
     const fBoostBtn = overlay.querySelector('.ldp-f-boost'), fBookmarkBtn = overlay.querySelector('.ldp-f-bookmark');
     const fOpenLink = overlay.querySelector('.ldp-f-open');
+    const stopBase64Selection = bindModalBase64Selection(modal);
 
     const loader = createLoader(topicId), tracker = createReadTracker(topicId, body);
     const ctx = {
@@ -1570,6 +1897,7 @@
 
     const close = () => {
       closeUserCard();
+      stopBase64Selection();
       tracker.stop();
       ctx.repliesIO.disconnect();
       overlay.remove();
@@ -1627,6 +1955,7 @@
     try {
       const topic = await loader.init();
       ctx.lastReadPostNumber = Number(topic.last_read_post_number) || 0;
+      tracker.setReadWaterline(ctx.lastReadPostNumber);
       ctx.op = topic._opUsername; ctx.totalComments = Math.max(0, (topic.posts_count || 1) - 1);
       overlay.querySelector('.ldp-title').textContent = topic.title;
       overlay.querySelector('.ldp-meta').textContent = `${topic.posts_count} 帖 · ${topic.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
@@ -1700,4 +2029,6 @@
     e.preventDefault(); e.stopPropagation();
     openModal(m[1]);
   }, true);
+
+  startBase64MenuObserver();
 })();
