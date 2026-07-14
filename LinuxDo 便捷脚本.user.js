@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.7
+// @version      1.1.8
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -200,6 +200,10 @@
     .ldp-time{font-size:12px;opacity:.55;}
     .ldp-floor{font-size:12px;opacity:.5;margin-left:auto;
       padding-left:8px;white-space:nowrap;}
+    .ldp-unread-dot{display:none;flex:none;width:8px;height:8px;border-radius:50%;
+      background:#55c7f7;box-shadow:0 0 0 3px rgba(85,199,247,.18);
+      margin-left:2px;}
+    .ldp-post.ldp-unread > .ldp-post-head .ldp-unread-dot{display:inline-block;}
     .ldp-content img{max-width:100%;height:auto;cursor:zoom-in;border-radius:4px;}
     .ldp-content pre{overflow:auto;background:var(--primary-very-low,#f6f6f6);
       padding:10px;border-radius:6px;}
@@ -705,7 +709,10 @@
 
     const markRead = (pn) => {
       const node = scrollRoot.querySelector(`.ldp-post[data-post-number="${pn}"]`);
-      if (node) node.classList.add('ldp-read');
+      if (node) {
+        node.classList.add('ldp-read');
+        node.classList.remove('ldp-unread');
+      }
     };
 
     const flush = async () => {
@@ -892,8 +899,11 @@
     const boostsHtml = renderBoosts(p.boosts || []);
     const canBoost = p.can_boost === true;
 
+    const lastReadPostNumber = Math.max(1, Number(ctx.lastReadPostNumber) || 0);
+    const isUnread = !p._ldpSkipUnread && p.post_number > lastReadPostNumber;
+
     const node = document.createElement('div');
-    node.className = 'ldp-post' + (isReply ? ' ldp-reply' : '');
+    node.className = 'ldp-post' + (isReply ? ' ldp-reply' : '') + (isUnread ? ' ldp-unread' : '');
     node.dataset.postId = p.id;
     node.dataset.postNumber = p.post_number;
     node.dataset.createdAt = p.created_at || '';
@@ -906,6 +916,7 @@
         ${isME ? '<span class="ldp-me">ME</span>' : ''}
         ${time ? `<span class="ldp-time">· ${esc(time)}</span>` : ''}
         <span class="ldp-floor">#${p.post_number}</span>
+        <span class="ldp-unread-dot" title="未读" aria-label="未读"></span>
       </div>
       <div class="ldp-content">${cooked}</div>
       <div class="ldp-boosts-list">${boostsHtml}</div>
@@ -1217,6 +1228,7 @@
               actions_summary: [],
               boosts: [],
               can_boost: true,
+              _ldpSkipUnread: true,
             }, !isTopLevel, ctx);
 
             newNode.classList.add('ldp-flash');
@@ -1614,6 +1626,7 @@
 
     try {
       const topic = await loader.init();
+      ctx.lastReadPostNumber = Number(topic.last_read_post_number) || 0;
       ctx.op = topic._opUsername; ctx.totalComments = Math.max(0, (topic.posts_count || 1) - 1);
       overlay.querySelector('.ldp-title').textContent = topic.title;
       overlay.querySelector('.ldp-meta').textContent = `${topic.posts_count} 帖 · ${topic.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;

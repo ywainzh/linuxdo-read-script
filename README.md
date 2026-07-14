@@ -2,7 +2,7 @@
 
 > 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
-![version](https://img.shields.io/badge/version-1.1.7-blue)
+![version](https://img.shields.io/badge/version-1.1.8-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-red)](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)
@@ -17,6 +17,7 @@
 - **楼中楼评论**：依据 `reply_to_post_number` 还原嵌套回复结构，缩进展示父子关系。
 - **滚动分页加载**：基于 `post_stream.stream` 分块按需加载，长帖首屏更快；底部哨兵 + `IntersectionObserver` 自动续加载。
 - **右侧时间轴**：弹窗内显示类似原帖的楼层进度与首尾日期；点击顶部日期回到开头，点击底部日期会加载剩余楼层并跳到最新回复。
+- **未读蓝点**：弹窗内未读楼层会显示类似原帖的小蓝点，阅读并成功上报后自动消失。
 - **点赞 / 取消赞**：显示点赞数，支持一键点赞与取消（取消受 Discourse 时间窗限制）。
 - **用户详情卡片**：点击弹窗内楼层头像可查看用户详情；在详情卡片中再次点击头像会新开标签进入用户主页。
 - **楼内回复**：可对任意楼层回复，发送后即时插入为该楼的楼中楼子节点。
