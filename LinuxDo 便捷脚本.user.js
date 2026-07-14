@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.9
+// @version      1.1.10
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -218,23 +218,44 @@
       min-height:32px;padding:5px 10px;border:none;border-radius:5px;cursor:pointer;
       background:transparent;color:inherit;font:inherit;font-size:13px;white-space:nowrap;}
     .ldp-base64-selection-menu button:hover{background:var(--primary-low,#eee);}
-    .ldp-base64-result{position:relative;margin:8px 0;
-      border:1px solid var(--primary-low,#ddd);border-radius:7px;
+    .ldp-base64-result{position:relative;margin:8px 0;min-height:42px;
+      overflow:hidden;border:none;border-radius:4px;
       background:var(--primary-very-low,#f6f6f6);color:var(--primary,#222);}
-    .ldp-base64-result pre{max-height:420px;margin:0;padding:38px 12px 12px;
-      overflow:auto;border:none;border-radius:inherit;background:transparent;
-      color:inherit;white-space:pre-wrap;overflow-wrap:anywhere;}
+    .ldp-base64-result pre{box-sizing:border-box;max-height:420px;min-height:42px;
+      margin:0;padding:11px 78px 11px 14px;overflow:auto;border:none;
+      border-radius:inherit;background:transparent;color:inherit;
+      font-size:13px;line-height:20px;white-space:pre-wrap;overflow-wrap:anywhere;}
     .ldp-base64-result code{font-family:ui-monospace,SFMono-Regular,Consolas,
       "Liberation Mono",monospace;}
-    .ldp-base64-toolbar{position:absolute;top:5px;right:5px;z-index:1;
-      display:flex;gap:4px;}
-    .ldp-base64-toolbar button{min-width:30px;height:28px;padding:3px 8px;
-      border:1px solid var(--primary-low,#ddd);border-radius:5px;cursor:pointer;
-      background:var(--secondary,#fff);color:var(--primary-medium,#666);
-      font:inherit;font-size:12px;line-height:1;}
-    .ldp-base64-toolbar button:hover{color:var(--tertiary,#08c);
-      background:var(--primary-low,#eee);}
-    .ldp-base64-toolbar button:disabled{cursor:default;opacity:.7;}
+    .ldp-base64-toolbar{position:absolute;top:50%;right:7px;z-index:1;
+      display:flex;gap:2px;transform:translateY(-50%);}
+    .ldp-base64-toolbar button{display:grid;min-width:28px;width:28px;height:28px;
+      place-items:center;padding:5px;border:none;border-radius:4px;cursor:pointer;
+      background:transparent;color:var(--primary-medium,#777);
+      font:inherit;font-size:18px;line-height:1;box-shadow:none;}
+    .ldp-base64-toolbar button:hover{color:var(--primary,#222);
+      background:var(--primary-low,#e9e9e9);}
+    .ldp-base64-toolbar button:focus-visible{outline:2px solid var(--tertiary,#08c);
+      outline-offset:1px;}
+    .ldp-base64-toolbar button:disabled{cursor:default;opacity:.65;}
+    .ldp-base64-toolbar button.ldp-base64-copy.copied{width:auto;padding-inline:7px;
+      font-size:12px;white-space:nowrap;}
+    .ldp-base64-toolbar svg{display:block;width:16px;height:16px;fill:currentColor;}
+
+    /* 弹窗正文代码块工具栏（原站会运行组件补按钮，弹窗需自行补齐） */
+    .ldp-codeblock-host{position:relative;}
+    .ldp-codeblock-host > pre{padding-right:48px;}
+    .ldp-codeblock-toolbar{position:absolute;top:6px;right:10px;z-index:2;
+      display:flex;gap:2px;}
+    .ldp-codeblock-toolbar button{display:grid;width:28px;height:28px;place-items:center;
+      padding:5px;border:none;border-radius:4px;cursor:pointer;box-shadow:none;
+      background:transparent;color:var(--primary-medium,#888);}
+    .ldp-codeblock-toolbar button:hover{background:var(--primary-low,#e8e8e8);
+      color:var(--primary,#222);}
+    .ldp-codeblock-toolbar button:focus-visible{outline:2px solid var(--tertiary,#08c);
+      outline-offset:1px;}
+    .ldp-codeblock-toolbar button:disabled{cursor:default;opacity:.65;}
+    .ldp-codeblock-toolbar svg{display:block;width:16px;height:16px;fill:currentColor;}
     .ldp-children{margin-left:22px;
       border-left:1px solid var(--tertiary,#08c);}
     .ldp-actions{display:flex;gap:14px;margin-top:8px;font-size:12px;align-items:center;}
@@ -749,7 +770,7 @@
 
   function createDecodedBlock(decodedText) {
     const wrapper = document.createElement('div');
-    wrapper.className = 'ldp-base64-result';
+    wrapper.className = 'md-codeblock ldp-base64-result';
     wrapper.setAttribute('data-base64-decoded', 'true');
 
     const pre = document.createElement('pre');
@@ -758,11 +779,13 @@
     pre.appendChild(code);
 
     const toolbar = document.createElement('div');
-    toolbar.className = 'ldp-base64-toolbar';
+    toolbar.className = 'codeblock-button-wrapper ldp-base64-toolbar';
 
     const copyBtn = document.createElement('button');
     copyBtn.type = 'button';
-    copyBtn.textContent = '复制';
+    copyBtn.className = 'btn nohighlight btn-flat ldp-base64-copy';
+    const copyIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z"/></svg>';
+    copyBtn.innerHTML = copyIcon;
     copyBtn.title = '复制解码文本';
     copyBtn.setAttribute('aria-label', '复制解码文本');
     copyBtn.addEventListener('click', async (e) => {
@@ -772,9 +795,13 @@
       try {
         await copyText(decodedText);
         copyBtn.textContent = '已复制';
+        copyBtn.classList.add('copied');
+        copyBtn.title = '已复制';
         setTimeout(() => {
           if (!copyBtn.isConnected) return;
-          copyBtn.textContent = '复制';
+          copyBtn.innerHTML = copyIcon;
+          copyBtn.classList.remove('copied');
+          copyBtn.title = '复制解码文本';
           copyBtn.disabled = false;
         }, 2000);
       } catch (err) {
@@ -785,6 +812,7 @@
 
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
+    closeBtn.className = 'btn nohighlight btn-flat ldp-base64-close';
     closeBtn.textContent = '×';
     closeBtn.title = '关闭';
     closeBtn.setAttribute('aria-label', '关闭解码结果');
@@ -797,6 +825,57 @@
     toolbar.append(copyBtn, closeBtn);
     wrapper.append(pre, toolbar);
     return wrapper;
+  }
+
+  function enhanceCodeBlocks(root) {
+    if (!root) return;
+    root.querySelectorAll('.ldp-content pre').forEach((pre) => {
+      if (pre.closest('.ldp-base64-result')) return;
+      if (pre.parentElement && pre.parentElement.querySelector(':scope > .codeblock-button-wrapper')) return;
+
+      const code = pre.querySelector('code');
+      const codeText = (code || pre).textContent || '';
+      let host = pre.parentElement;
+      if (!host || (!host.classList.contains('md-codeblock') && !host.classList.contains('highlight'))) {
+        host = document.createElement('div');
+        pre.insertAdjacentElement('beforebegin', host);
+        host.appendChild(pre);
+      }
+      host.classList.add('ldp-codeblock-host');
+
+      const toolbar = document.createElement('div');
+      toolbar.className = 'codeblock-button-wrapper ldp-codeblock-toolbar';
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'btn nohighlight btn-flat ldp-code-copy';
+      copyBtn.title = '复制代码';
+      copyBtn.setAttribute('aria-label', '复制代码');
+      const copyIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z"/></svg>';
+      const copiedIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 16.2-3.5-3.5-1.4 1.4L9 19 20.3 7.7l-1.4-1.4L9 16.2Z"/></svg>';
+      copyBtn.innerHTML = copyIcon;
+      copyBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        copyBtn.disabled = true;
+        try {
+          await copyText(codeText);
+          copyBtn.innerHTML = copiedIcon;
+          copyBtn.title = '已复制';
+          setTimeout(() => {
+            if (!copyBtn.isConnected) return;
+            copyBtn.innerHTML = copyIcon;
+            copyBtn.title = '复制代码';
+            copyBtn.disabled = false;
+          }, 2000);
+        } catch (err) {
+          copyBtn.disabled = false;
+          alert('复制失败，请手动复制');
+        }
+      });
+
+      toolbar.appendChild(copyBtn);
+      host.appendChild(toolbar);
+    });
   }
 
   function insertDecodedBlock(decodedText, range) {
@@ -1269,6 +1348,7 @@
       <div class="ldp-sub-loading">加载楼中楼中…</div>
       <div class="ldp-sub-actions"><button class="ldp-btn ldp-load-more-replies">展示更多回复 ↓</button></div>
     `;
+    enhanceCodeBlocks(node);
     return node;
   }
 
