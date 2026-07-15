@@ -1,15 +1,15 @@
 # LinuxDo 便捷脚本
 
-> 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
+> 在 LINUX DO 与 IDC Flare 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
-![version](https://img.shields.io/badge/version-1.1.10-blue)
+![version](https://img.shields.io/badge/version-1.1.11-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-red)](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)
 
 ## 简介
 
-[LINUX DO](https://linux.do) 基于 Discourse 构建。本脚本利用 Discourse 官方 JSON 接口，在话题列表页拦截标题点击，以**弹窗**形式直接预览帖子内容，避免频繁跳转与"返回即刷新、丢失浏览位置"的困扰。所有交互（点赞、回复、收藏、已读）均通过官方接口完成，沿用浏览器现有登录态。
+[LINUX DO](https://linux.do) 与 [IDC Flare](https://idcflare.com) 均基于 Discourse 构建。本脚本利用当前论坛的 Discourse JSON 接口，在话题列表页拦截标题点击，以**弹窗**形式直接预览帖子内容，避免频繁跳转与"返回即刷新、丢失浏览位置"的困扰。所有交互（点赞、回复、收藏、已读）均使用当前域名的接口和浏览器登录态，两个论坛之间不会混用数据。
 
 ## 功能特性
 
@@ -32,7 +32,7 @@
 
 1. 安装用户脚本管理器：[Tampermonkey](https://www.tampermonkey.net/) 或 [Violentmonkey](https://violentmonkey.github.io/)。
 2. 打开 [Greasy Fork 脚本页](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC) 并点击安装。
-3. 刷新 `https://linux.do` 任意页面即可生效。
+3. 刷新 `https://linux.do` 或 `https://idcflare.com` 任意页面即可生效。
 
 ## 发布更新
 
@@ -88,7 +88,8 @@ const FLUSH_INTERVAL = 5000;   // 已读增量上报间隔（毫秒）
 
 ## 兼容性
 
-- 适用于基于 Discourse 的 `https://linux.do`（`@match https://linux.do/*`）。
+- 适用于基于 Discourse 的 `https://linux.do` 与 `https://idcflare.com`；脚本只在这两个明确配置的域名运行。
+- IDC Flare 的 Cloudflare 验证需由用户在浏览器中正常完成；通过后脚本复用当前页面的同源 Cookie，不绕过站点验证。
 - 依赖现代浏览器特性：`fetch`、`IntersectionObserver`、`URLSearchParams`。
 - 大部分功能需登录后才能成功调用（点赞、回复、收藏、已读上报）。
 

@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.10
+// @version      1.1.11
 // @license      MIT
-// @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
+// @description  在 LINUX DO 与 IDC Flare 列表页点击标题即可弹窗预览整帖，支持楼中楼、点赞、回复、收藏、原图灯箱和已读进度上报。
 // @author       Fashion
 // @match        https://linux.do/*
+// @match        https://idcflare.com/*
 // @icon         https://cdn3.ldstatic.com/optimized/4X/6/a/6/6a6affc7b1ce8140279e959d32671304db06d5ab_2_180x180.png
 // @grant        none
 // @run-at       document-idle
