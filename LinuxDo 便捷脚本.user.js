@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.12
+// @version      1.1.13
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 列表页点击标题即可弹窗预览整帖，支持楼中楼、点赞、回复、收藏、原图灯箱和已读进度上报。
 // @author       Fashion
@@ -81,10 +81,12 @@
       padding:0;background:transparent;cursor:pointer;}
     .ldp-tl-track::before{content:"";position:absolute;top:8px;bottom:8px;left:50%;
       width:2px;transform:translateX(-50%);background:var(--primary-low,#e6e6e6);}
-    .ldp-tl-fill{position:absolute;top:8px;left:50%;width:3px;height:0;
-      transform:translateX(-50%);border-radius:999px;background:var(--tertiary,#08c);}
+    .ldp-tl-fill{position:absolute;top:8px;bottom:8px;left:50%;width:3px;
+      transform:translateX(-50%) scaleY(0);transform-origin:center top;
+      will-change:transform;border-radius:999px;background:var(--tertiary,#08c);}
     .ldp-tl-thumb{position:absolute;left:50%;top:8px;width:14px;height:14px;
-      transform:translate(-50%,-50%);border-radius:50%;background:var(--tertiary,#08c);
+      transform:translate(-50%,-50%) translateY(0);will-change:transform;
+      border-radius:50%;background:var(--tertiary,#08c);
       box-shadow:0 0 0 4px rgba(8,132,255,.14);}
     .ldp-tl-loading .ldp-tl-bottom-date{opacity:.6;pointer-events:none;}
     .ldp-tl-date:focus-visible,.ldp-tl-track:focus-visible{
@@ -161,6 +163,8 @@
     .ldp-comments-empty{padding:18px 0;text-align:center;opacity:.5;font-size:13px;}
 
     .ldp-post{padding:12px 0 12px 12px;border-bottom:1px solid var(--primary-low,#eee);}
+    .ldp-topic > .ldp-post,.ldp-comments > .ldp-post{
+      content-visibility:auto;contain-intrinsic-size:auto 180px;}
     .ldp-post.ldp-flash{animation:ldp-flash-bg 1.6s ease;}
     @keyframes ldp-flash-bg{
       0%{background:rgba(8,132,255,.16);}
@@ -1459,6 +1463,18 @@
     ctx.pending = rest;
   }
 
+  function insertPostsBatch(posts, ctx, position) {
+    if (!posts || !posts.length) return 0;
+    const fragment = document.createDocumentFragment();
+    const tempCtx = Object.assign({}, ctx, { commentsEl: fragment, onPostsChanged: null });
+    posts.forEach((post) => attachPost(post, tempCtx));
+    reflowPending(tempCtx);
+    ctx.pending = tempCtx.pending;
+    if (position === 'prepend') ctx.commentsEl.prepend(fragment);
+    else ctx.commentsEl.appendChild(fragment);
+    return posts.length;
+  }
+
   /* ============ 7. 渲染单条 ============ */
   function renderPost(p, isReply, ctx) {
     const avatar = resolveAvatar(p.avatar_template, 48);
@@ -1467,18 +1483,7 @@
     const isME = ME_USERNAME && p.username === ME_USERNAME;
     const time = fmtTime(p.created_at);
 
-    // 强制 cooked 里的链接在新标签页打开（图片/灯箱链接除外）
-    let cooked = p.cooked || '';
-    cooked = (() => {
-      const tmp = document.createElement('div');
-      tmp.innerHTML = cooked;
-      tmp.querySelectorAll('a[href]').forEach(a => {
-        if (!isImageAnchor(a)) {
-          if (!a.getAttribute('target')) a.setAttribute('target', '_blank');
-        }
-      });
-      return tmp.innerHTML;
-    })();
+    const cooked = p.cooked || '';
 
     // Boosts 数据
     const boostsHtml = renderBoosts(p.boosts || []);
@@ -1530,6 +1535,17 @@
       <div class="ldp-sub-loading">加载楼中楼中…</div>
       <div class="ldp-sub-actions"><button class="ldp-btn ldp-load-more-replies">展示更多回复 ↓</button></div>
     `;
+    const content = node.querySelector('.ldp-content');
+    content.querySelectorAll('a[href]').forEach((anchor) => {
+      if (!isImageAnchor(anchor) && !anchor.getAttribute('target')) anchor.setAttribute('target', '_blank');
+    });
+    content.querySelectorAll('img').forEach((img) => {
+      if (!img.hasAttribute('loading')) img.setAttribute('loading', 'lazy');
+      if (!img.hasAttribute('decoding')) img.setAttribute('decoding', 'async');
+    });
+    content.querySelectorAll('iframe').forEach((iframe) => {
+      if (!iframe.hasAttribute('loading')) iframe.setAttribute('loading', 'lazy');
+    });
     enhanceCodeBlocks(node);
     return node;
   }
@@ -1613,12 +1629,15 @@
     const limit = start === 0 ? SUB_REPLY_INITIAL_SIZE : SUB_REPLY_PAGE_SIZE;
     const batch = state.all.slice(start, start + limit);
 
+    const batchCtx = Object.assign({}, ctx, { onPostsChanged: null });
     batch.forEach((rp) => {
       if (!rp.reply_to_post_number) rp.reply_to_post_number = postNumber;
-      attachPost(rp, ctx);
+      attachPost(rp, batchCtx);
     });
     state.renderedCount += batch.length;
-    reflowPending(ctx);
+    reflowPending(batchCtx);
+    ctx.pending = batchCtx.pending;
+    if (ctx.onPostsChanged) ctx.onPostsChanged();
 
     const actionEl = parentNode.querySelector(':scope > .ldp-sub-actions');
     const btnEl = actionEl && actionEl.querySelector('.ldp-load-more-replies');
@@ -1833,6 +1852,7 @@
             ctx.tracker.observe(newNode);
             ctx.totalComments = (ctx.totalComments || 0) + 1;
             updateCommentsHeader(ctx);
+            if (ctx.onPostsChanged) ctx.onPostsChanged();
 
             const tip = box.querySelector('.ldp-reply-tip');
             if (tip) {
@@ -1949,7 +1969,7 @@
 
   function bindTimeline(modal, ctx, topic, controls) {
     const rail = modal.querySelector('.ldp-timeline');
-    if (!rail) return () => {};
+    if (!rail) return { refresh() {}, destroy() {} };
 
     const body = ctx.scrollRoot;
     const topDateBtn = rail.querySelector('.ldp-tl-top-date');
@@ -1962,43 +1982,66 @@
     const totalPosts = Math.max(1, topic.highest_post_number || topic.posts_count || ctx.totalComments + 1);
     let raf = 0;
     let loadingLatest = false;
+    let cachedPosts = [];
+    let currentPost = null;
+    let trackHeight = Math.max(1, track.clientHeight - 16);
+    let lastRatio = -1;
+    let lastPercent = -1;
+    let lastPostNumber = -1;
+    let lastDate = null;
+    let lastDisabled = null;
+    let destroyed = false;
 
     topDateBtn.textContent = fmtDate(topic.created_at) || '顶部';
     bottomDateBtn.textContent = fmtDate(topic.last_posted_at || topic.bumped_at) || '底部';
 
-    const posts = () => Array.from(body.querySelectorAll('.ldp-post[data-post-number]'))
-      .sort((a, b) => (+a.dataset.postNumber || 0) - (+b.dataset.postNumber || 0));
-
     const visiblePost = () => {
-      const list = posts();
-      if (!list.length) return null;
+      if (!cachedPosts.length) return null;
       const bodyRect = body.getBoundingClientRect();
-      const probe = bodyRect.top + Math.min(bodyRect.height * 0.35, 180);
-      let current = list[0];
-      list.forEach((post) => {
-        if (post.getBoundingClientRect().top <= probe) current = post;
-      });
-      return current;
+      const probeX = bodyRect.left + Math.max(1, bodyRect.width * 0.5);
+      const probeY = bodyRect.top + Math.min(bodyRect.height * 0.35, 180);
+      const hit = document.elementFromPoint(probeX, probeY);
+      const hitPost = hit && hit.closest ? hit.closest('.ldp-post[data-post-number]') : null;
+      if (hitPost && body.contains(hitPost)) currentPost = hitPost;
+      if (!currentPost || !currentPost.isConnected) {
+        currentPost = body.scrollTop <= 1 ? cachedPosts[0] : cachedPosts[cachedPosts.length - 1];
+      }
+      return currentPost;
     };
 
     const setProgress = () => {
       const max = Math.max(1, body.scrollHeight - body.clientHeight);
       const ratio = Math.max(0, Math.min(1, body.scrollTop / max));
-      const trackRect = track.getBoundingClientRect();
-      const trackHeight = Math.max(1, trackRect.height - 16);
-      fill.style.height = `${ratio * trackHeight}px`;
-      thumb.style.top = `${8 + ratio * trackHeight}px`;
-      track.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+      if (Math.abs(ratio - lastRatio) >= 0.0005) {
+        fill.style.transform = `translateX(-50%) scaleY(${ratio})`;
+        thumb.style.transform = `translate(-50%,-50%) translateY(${ratio * trackHeight}px)`;
+        lastRatio = ratio;
+      }
+      const percent = Math.round(ratio * 100);
+      if (percent !== lastPercent) {
+        track.setAttribute('aria-valuenow', String(percent));
+        lastPercent = percent;
+      }
 
       const post = visiblePost();
       const postNumber = post ? (+post.dataset.postNumber || 1) : 1;
-      currentText.textContent = `${postNumber} / ${totalPosts}`;
-      currentDate.textContent = post ? (fmtDate(post.dataset.createdAt) || '当前') : '当前';
-      bottomDateBtn.disabled = loadingLatest;
+      if (postNumber !== lastPostNumber) {
+        currentText.textContent = `${postNumber} / ${totalPosts}`;
+        lastPostNumber = postNumber;
+      }
+      const date = post ? (fmtDate(post.dataset.createdAt) || '当前') : '当前';
+      if (date !== lastDate) {
+        currentDate.textContent = date;
+        lastDate = date;
+      }
+      if (loadingLatest !== lastDisabled) {
+        bottomDateBtn.disabled = loadingLatest;
+        lastDisabled = loadingLatest;
+      }
     };
 
     const schedule = () => {
-      if (raf) return;
+      if (destroyed || raf) return;
       raf = requestAnimationFrame(() => {
         raf = 0;
         setProgress();
@@ -2026,23 +2069,56 @@
       body.scrollTo({ top: max * Math.max(0, Math.min(1, ratio)), behavior: 'smooth' });
     };
 
-    topDateBtn.addEventListener('click', jumpTop);
-    bottomDateBtn.addEventListener('click', jumpBottom);
-    track.addEventListener('click', (e) => {
+    const onTrackClick = (e) => {
       const rect = track.getBoundingClientRect();
       jumpByRatio((e.clientY - rect.top) / Math.max(1, rect.height));
-    });
-    track.addEventListener('keydown', (e) => {
+    };
+
+    const onTrackKeydown = (e) => {
       if (e.key === 'Home') { e.preventDefault(); jumpTop(); }
       else if (e.key === 'End') { e.preventDefault(); jumpBottom(); }
       else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); body.scrollBy({ top: -160, behavior: 'smooth' }); }
       else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); body.scrollBy({ top: 160, behavior: 'smooth' }); }
       else if (e.key === 'PageUp') { e.preventDefault(); body.scrollBy({ top: -body.clientHeight * 0.8, behavior: 'smooth' }); }
       else if (e.key === 'PageDown') { e.preventDefault(); body.scrollBy({ top: body.clientHeight * 0.8, behavior: 'smooth' }); }
+    };
+
+    const refresh = () => {
+      cachedPosts = Array.from(body.querySelectorAll('.ldp-post[data-post-number]'))
+        .sort((a, b) => (+a.dataset.postNumber || 0) - (+b.dataset.postNumber || 0));
+      if (!currentPost || !currentPost.isConnected) currentPost = cachedPosts[0] || null;
+      schedule();
+    };
+
+    const resizeObserver = new ResizeObserver(() => {
+      trackHeight = Math.max(1, track.clientHeight - 16);
+      lastRatio = -1;
+      schedule();
     });
+
+    topDateBtn.addEventListener('click', jumpTop);
+    bottomDateBtn.addEventListener('click', jumpBottom);
+    track.addEventListener('click', onTrackClick);
+    track.addEventListener('keydown', onTrackKeydown);
     body.addEventListener('scroll', schedule, { passive: true });
-    schedule();
-    return schedule;
+    resizeObserver.observe(track);
+    resizeObserver.observe(ctx.topicEl);
+    resizeObserver.observe(ctx.commentsEl);
+    refresh();
+
+    return {
+      refresh,
+      destroy() {
+        destroyed = true;
+        cancelAnimationFrame(raf);
+        resizeObserver.disconnect();
+        topDateBtn.removeEventListener('click', jumpTop);
+        bottomDateBtn.removeEventListener('click', jumpBottom);
+        track.removeEventListener('click', onTrackClick);
+        track.removeEventListener('keydown', onTrackKeydown);
+        body.removeEventListener('scroll', schedule);
+      },
+    };
   }
 
   /* 骨架屏 HTML */
@@ -2211,6 +2287,7 @@
     let upDone = false, downDone = false;
     let upPromise = Promise.resolve(false), downPromise = Promise.resolve(false);
     let upIO = null, downIO = null;
+    let timelineController = null;
 
     const close = () => {
       if (closed) return;
@@ -2222,6 +2299,7 @@
       ctx.repliesIO.disconnect();
       if (upIO) upIO.disconnect();
       if (downIO) downIO.disconnect();
+      if (timelineController) timelineController.destroy();
       overlay.remove();
       if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null;
       if (CURRENT_MODAL_CLOSE === close) CURRENT_MODAL_CLOSE = null;
@@ -2281,7 +2359,7 @@
         try {
           const result = await loader.loadDown();
           if (closed) return false;
-          result.posts.forEach((post) => attachPost(post, ctx));
+          insertPostsBatch(result.posts, ctx, 'append');
           downDone = result.done;
           notifyPostsChanged();
           return result.posts.length > 0 || result.done;
@@ -2308,12 +2386,7 @@
           if (closed) return false;
 
           if (loadedPosts.length) {
-            const fragment = document.createDocumentFragment();
-            const tempCtx = Object.assign({}, ctx, { commentsEl: fragment, onPostsChanged: null });
-            loadedPosts.forEach((post) => attachPost(post, tempCtx));
-            reflowPending(tempCtx);
-            ctx.pending = tempCtx.pending;
-            commentsEl.prepend(fragment);
+            insertPostsBatch(loadedPosts, ctx, 'prepend');
             await new Promise((resolve) => requestAnimationFrame(() => {
               body.scrollTop = oldTop + (body.scrollHeight - oldHeight);
               resolve();
@@ -2393,15 +2466,14 @@
 
       const initial = await loader.loadInitial(resolvedTarget);
       if (closed) return;
-      initial.posts.forEach((post) => attachPost(post, ctx));
-      reflowPending(ctx);
+      insertPostsBatch(initial.posts, ctx, 'append');
       upDone = loader.topReached;
       downDone = loader.bottomReached;
 
-      ctx.onPostsChanged = bindTimeline(modal, ctx, topic, {
+      timelineController = bindTimeline(modal, ctx, topic, {
         loadToBottom,
       });
-      ctx.onPostsChanged();
+      ctx.onPostsChanged = timelineController.refresh;
 
       bindActions(modal, ctx);
       tracker.start();
@@ -2414,11 +2486,6 @@
       }, { root: body, rootMargin: '300px 0px' });
       upIO.observe(upSentinel);
       downIO.observe(downSentinel);
-      body.addEventListener('scroll', () => {
-        if (isAnchoring || closed) return;
-        if (sentinelVisible(upSentinel)) pumpUp();
-        if (sentinelVisible(downSentinel)) pumpDown();
-      }, { passive: true });
 
       maskEl.classList.add('hide');
       setTimeout(() => maskEl.remove(), 300);

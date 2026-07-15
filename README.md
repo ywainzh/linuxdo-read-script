@@ -2,7 +2,7 @@
 
 > 在 LINUX DO 与 IDC Flare 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
-![version](https://img.shields.io/badge/version-1.1.12-blue)
+![version](https://img.shields.io/badge/version-1.1.13-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-red)](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)
@@ -16,6 +16,7 @@
 - **智能续读与通知直达**：列表标题会从第一条未读回复继续阅读；通知/用户菜单中的具体楼层链接会直接定位并高亮目标楼层。
 - **楼中楼评论**：依据 `reply_to_post_number` 还原嵌套回复结构，缩进展示父子关系。
 - **双向分片加载**：基于目标楼层前后窗口按需加载，滚动到顶部或底部自动补齐前后楼层；向上插入时保持当前视口不跳动。
+- **流畅滚动优化**：时间轴使用常量级当前楼层探测，楼层批量插入，并跳过离屏内容的绘制，长帖滚动时不逐帧扫描全部楼层。
 - **右侧时间轴**：弹窗内显示类似原帖的楼层进度与首尾日期；点击顶部日期回到开头，点击底部日期会加载剩余楼层并跳到最新回复。
 - **请求限流与自动重试**：只读请求统一串行并保持最小间隔；遇到 HTTP 429 会遵循 `Retry-After` 或指数退避后自动重试。
 - **未读蓝点**：弹窗内未读楼层会显示类似原帖的小蓝点，阅读并成功上报后自动消失。
@@ -98,7 +99,7 @@ const RETRY_BASE_DELAY = 500;     // 指数退避基础延迟（毫秒）
 
 - 适用于基于 Discourse 的 `https://linux.do` 与 `https://idcflare.com`；脚本只在这两个明确配置的域名运行。
 - IDC Flare 的 Cloudflare 验证需由用户在浏览器中正常完成；通过后脚本复用当前页面的同源 Cookie，不绕过站点验证。
-- 依赖现代浏览器特性：`fetch`、`IntersectionObserver`、`URLSearchParams`。
+- 依赖现代浏览器特性：`fetch`、`IntersectionObserver`、`ResizeObserver`、`URLSearchParams` 和 CSS `content-visibility`。
 - 大部分功能需登录后才能成功调用（点赞、回复、收藏、已读上报）。
 
 ## 常见问题
