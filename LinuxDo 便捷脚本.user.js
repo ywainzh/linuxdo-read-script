@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.11
+// @version      1.1.12
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 列表页点击标题即可弹窗预览整帖，支持楼中楼、点赞、回复、收藏、原图灯箱和已读进度上报。
 // @author       Fashion
@@ -21,12 +21,18 @@
   const FLUSH_INTERVAL = 5000;
   let ME_USERNAME = null;
 
-  // --- 楼中楼分批加载 & 请求节流 相关配置 ---
+  // --- 楼中楼分批加载配置 ---
   const SUB_REPLY_INITIAL_SIZE = 3;   // 楼中楼默认展示条数
   const SUB_REPLY_PAGE_SIZE = 10;     // 每次点击“展示更多”追加条数
-  const REPLIES_FETCH_MIN_INTERVAL = 300; // 楼中楼接口请求最小间隔(ms)
   const REPLIES_HOVER_DELAY = 400;    // 楼层在视口停留超过此时长才触发抓取(ms)
-  let lastRepliesFetchTime = 0; // 楼中楼请求节流用的时间戳
+
+  // --- 全局只读请求队列 & HTTP 429 退避重试 ---
+  const REQUEST_MIN_INTERVAL = 300;   // 相邻 GET 请求最小间隔(ms)
+  const RETRY_MAX_ATTEMPTS = 3;       // 429 最多重试次数（不含首次请求）
+  const RETRY_BASE_DELAY = 500;       // 无 Retry-After 时的指数退避基础延迟(ms)
+  const SLICE_RADIUS = 20;            // 定位楼层前后各预加载的窗口半径
+  let lastRequestTime = 0;
+  let requestQueueTail = Promise.resolve();
 
   const MENU_PANEL_SEL = '.menu-panel, .user-menu, .quick-access-panel, .notifications';
   const SEARCH_SEL = '.search-results, .fps-result, .search-menu, .search-menu-container, .search-result-topic';
@@ -285,6 +291,14 @@
       animation:ldp-spin .9s linear infinite;}
     @keyframes ldp-spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
 
+    .ldp-load-up-tip,.ldp-load-down-tip{display:none;padding:9px 0;text-align:center;
+      font-size:12px;color:var(--primary-medium,#888);user-select:none;}
+    .ldp-load-up-tip.show,.ldp-load-down-tip.show{display:block;}
+    .ldp-load-up-tip .ldp-tip-icon,.ldp-load-down-tip .ldp-tip-icon{
+      display:inline-block;margin-right:5px;animation:ldp-spin .9s linear infinite;}
+    .ldp-top-tip{padding:10px 0;text-align:center;font-size:12px;
+      color:var(--primary-medium,#888);user-select:none;}
+
     .ldp-bottom-tip{padding:16px 0;text-align:center;font-size:13px;
       color:var(--primary-medium,#888);user-select:none;}
 
@@ -410,21 +424,87 @@
   const csrfToken = () =>
       (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
 
-  async function fetchJSON(url) {
-    const res = await fetch(url, {
-      credentials: 'include', headers: { 'Accept': 'application/json' },
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res.json();
+  function abortError() {
+    return new DOMException('The operation was aborted.', 'AbortError');
   }
 
-  // 专用于楼中楼 replies 接口的节流请求，与其它接口的 fetchJSON 互不影响
-  async function fetchRepliesThrottled(url) {
-    const now = Date.now();
-    const wait = REPLIES_FETCH_MIN_INTERVAL - (now - lastRepliesFetchTime);
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-    lastRepliesFetchTime = Date.now();
-    return fetchJSON(url);
+  function throwIfAborted(signal) {
+    if (signal && signal.aborted) throw abortError();
+  }
+
+  function sleep(ms, signal) {
+    if (!(ms > 0)) {
+      throwIfAborted(signal);
+      return Promise.resolve();
+    }
+    return new Promise((resolve, reject) => {
+      throwIfAborted(signal);
+      const timer = setTimeout(done, ms);
+      function cleanup() {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', onAbort);
+      }
+      function done() { cleanup(); resolve(); }
+      function onAbort() { cleanup(); reject(abortError()); }
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  function parseRetryAfter(value) {
+    if (!value) return null;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    const date = Date.parse(value);
+    return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+  }
+
+  async function waitForRequestSlot(signal) {
+    const wait = REQUEST_MIN_INTERVAL - (Date.now() - lastRequestTime);
+    if (wait > 0) await sleep(wait, signal);
+    throwIfAborted(signal);
+    lastRequestTime = Date.now();
+  }
+
+  function queueRequest(task, signal) {
+    const queued = requestQueueTail.then(async () => {
+      throwIfAborted(signal);
+      return task();
+    });
+    requestQueueTail = queued.catch(() => {});
+    if (!signal) return queued;
+
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) { reject(abortError()); return; }
+      const onAbort = () => reject(abortError());
+      signal.addEventListener('abort', onAbort, { once: true });
+      queued.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    });
+  }
+
+  async function fetchWithRetry(url, options) {
+    const opts = options || {};
+    const signal = opts.signal;
+    const headers = Object.assign({ 'Accept': 'application/json' }, opts.headers || {});
+    const fetchOptions = Object.assign({}, opts, {
+      method: 'GET', credentials: 'include', headers,
+    });
+
+    for (let attempt = 0; ; attempt++) {
+      await waitForRequestSlot(signal);
+      const res = await fetch(url, fetchOptions);
+      if (res.ok) return res.json();
+      if (res.status !== 429 || attempt >= RETRY_MAX_ATTEMPTS) {
+        throw new Error('HTTP ' + res.status);
+      }
+      const retryAfter = parseRetryAfter(res.headers.get('Retry-After'));
+      const delay = retryAfter === null ? RETRY_BASE_DELAY * Math.pow(2, attempt) : retryAfter;
+      await sleep(delay, signal);
+    }
+  }
+
+  function fetchJSON(url, options) {
+    const opts = options || {};
+    return queueRequest(() => fetchWithRetry(url, opts), opts.signal);
   }
 
   async function apiSend(url, method, params, extraHeaders) {
@@ -448,18 +528,48 @@
     return res.json().catch(() => ({}));
   }
 
-  async function ensureMe() {
+  async function ensureMe(signal) {
     if (ME_USERNAME !== null) return ME_USERNAME;
     try {
-      const s = await fetchJSON(`${BASE}/session/current.json`);
+      const s = await fetchJSON(`${BASE}/session/current.json`, { signal });
       ME_USERNAME = (s.current_user && s.current_user.username) || '';
-    } catch (e) { ME_USERNAME = ''; }
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      ME_USERNAME = '';
+    }
     return ME_USERNAME;
   }
 
   function likeInfo(p) {
     const like = (p.actions_summary || []).find((a) => a.id === 2) || {};
     return { count: like.count || 0, acted: !!like.acted, canAct: !!like.can_act };
+  }
+
+  function parseTopicHref(href) {
+    if (!href) return null;
+    let pathname;
+    try { pathname = new URL(href, location.origin).pathname; }
+    catch (err) { return null; }
+    const parts = pathname.split('/').filter(Boolean);
+    if (parts[0] !== 't' || !parts[1]) return null;
+    const hasSlug = !/^\d+$/.test(parts[1]);
+    const topicPart = hasSlug ? parts[2] : parts[1];
+    const postPart = hasSlug ? parts[3] : parts[2];
+    if (!topicPart || !/^\d+$/.test(topicPart)) return null;
+    return {
+      topicId: topicPart,
+      targetPostNumber: postPart && /^\d+$/.test(postPart) ? Number(postPart) : null,
+    };
+  }
+
+  function resolveInitialTarget(topic, requestedTarget) {
+    const requested = Number(requestedTarget) || 0;
+    if (requested > 0) return requested;
+    const lastRead = Number(topic && topic.last_read_post_number) || 0;
+    const highest = Number(topic && topic.highest_post_number)
+        || Number(topic && topic.posts_count)
+        || 1;
+    return lastRead > 0 && lastRead < highest ? lastRead + 1 : 1;
   }
 
   /* ============ 2.5 Boosts 气泡渲染辅助 ============ */
@@ -1165,18 +1275,25 @@
   }
 
   /* ============ 5. 加载器 ============ */
-  function createLoader(topicId) {
+  function createLoader(topicId, signal) {
     let stream = [];
     const cache = new Map();
-    let cursor = 0;
     let topic = null;
-    let failStreak = 0;
+    let upCursor = 0;
+    let downCursor = 0;
+    let topReached = false;
+    let bottomReached = false;
+
+    async function fetchSlice(ids) {
+      const missing = ids.filter((id) => !cache.has(id));
+      if (!missing.length) return;
+      const qs = missing.map((id) => `post_ids[]=${id}`).join('&');
+      const part = await fetchJSON(`${BASE}/t/${topicId}/posts.json?${qs}`, { signal });
+      ((part.post_stream && part.post_stream.posts) || []).forEach((p) => cache.set(p.id, p));
+    }
 
     async function init() {
-      await ensureMe();
-      const res = await fetch(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`, {
-        method: 'GET',
-        credentials: 'include',
+      const topicPromise = fetchJSON(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`, {
         cache: 'no-store',
         headers: {
           'Accept': 'application/json, text/javascript, */*; q=0.01',
@@ -1185,52 +1302,116 @@
           'Discourse-Track-View': 'true',
           'Discourse-Track-View-Topic-Id': String(topicId),
         },
+        signal,
       });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
+      const mePromise = ensureMe(signal).catch(() => {});
+      const data = await topicPromise;
+      await mePromise;
       topic = data;
-      stream = data.post_stream.stream || [];
-      data.post_stream.posts.forEach((p) => cache.set(p.id, p));
+      const initialPosts = (data.post_stream && data.post_stream.posts) || [];
+      initialPosts.forEach((p) => cache.set(p.id, p));
+      stream = ((data.post_stream && data.post_stream.stream) || []).filter((id) => {
+        const post = cache.get(id);
+        return !(post && post.post_number === 1);
+      });
       const op = (topic.details && topic.details.created_by && topic.details.created_by.username)
-          || (data.post_stream.posts.find((p) => p.post_number === 1) || {}).username
+          || (initialPosts.find((p) => p.post_number === 1) || {}).username
           || null;
       topic._opUsername = op;
-      topic._opPost = data.post_stream.posts.find((p) => p.post_number === 1) || null;
+      topic._opPost = initialPosts.find((p) => p.post_number === 1) || null;
       return topic;
     }
 
-    async function next() {
-      if (cursor >= stream.length) return { posts: [], done: true };
-      const slice = stream.slice(cursor, cursor + PAGE_SIZE);
-      let missing = slice.filter((id) => !cache.has(id));
-
-      for (let attempt = 0; attempt < 2 && missing.length; attempt++) {
-        const qs = missing.map((id) => `post_ids[]=${id}`).join('&');
-        try {
-          const part = await fetchJSON(`${BASE}/t/${topicId}/posts.json?${qs}`);
-          part.post_stream.posts.forEach((p) => cache.set(p.id, p));
-        } catch (e) {}
-        missing = slice.filter((id) => !cache.has(id));
-      }
-
-      if (missing.length) {
-        failStreak++;
-        if (failStreak >= 4) {
-          cursor += slice.length;
-          failStreak = 0;
-          const posts = slice.map((id) => cache.get(id)).filter(Boolean);
-          return { posts, done: cursor >= stream.length };
-        }
-        return { posts: [], done: false, retry: true };
-      }
-
-      failStreak = 0;
-      cursor += slice.length;
-      const posts = slice.map((id) => cache.get(id)).filter(Boolean);
-      return { posts, done: cursor >= stream.length };
+    function nearestPost(posts, requestedPostNumber) {
+      const sorted = posts.slice().sort((a, b) => a.post_number - b.post_number);
+      return sorted.find((p) => p.post_number === requestedPostNumber)
+          || sorted.find((p) => p.post_number > requestedPostNumber)
+          || sorted[sorted.length - 1]
+          || null;
     }
 
-    return { init, next, get topic() { return topic; } };
+    async function loadInitial(targetPostNumber) {
+      if (!targetPostNumber || targetPostNumber <= 1 || !stream.length) {
+        upCursor = 0;
+        downCursor = Math.min(PAGE_SIZE, stream.length);
+        topReached = true;
+        bottomReached = downCursor >= stream.length;
+        const ids = stream.slice(0, downCursor);
+        await fetchSlice(ids);
+        return {
+          posts: ids.map((id) => cache.get(id)).filter(Boolean),
+          targetPostNumber: 1,
+        };
+      }
+
+      let safeIdx = null;
+      let resolvedTarget = Number(targetPostNumber);
+      try {
+        const anchor = await fetchJSON(`${BASE}/t/${topicId}.json?post_number=${resolvedTarget}`, { signal });
+        const anchorPosts = (anchor.post_stream && anchor.post_stream.posts) || [];
+        anchorPosts.forEach((p) => cache.set(p.id, p));
+        const nearest = nearestPost(anchorPosts, resolvedTarget);
+        if (nearest) {
+          resolvedTarget = nearest.post_number;
+          const idx = stream.indexOf(nearest.id);
+          if (idx >= 0) safeIdx = idx;
+        }
+      } catch (err) {
+        if (err && err.name === 'AbortError') throw err;
+      }
+
+      if (safeIdx === null) {
+        safeIdx = Math.min(Math.max(0, resolvedTarget - 2), Math.max(0, stream.length - 1));
+      }
+
+      const start = Math.max(0, safeIdx - SLICE_RADIUS);
+      const end = Math.min(stream.length, safeIdx + SLICE_RADIUS + 1);
+      upCursor = start;
+      downCursor = end;
+      topReached = start === 0;
+      bottomReached = end >= stream.length;
+      const ids = stream.slice(start, end);
+      await fetchSlice(ids);
+      const posts = ids.map((id) => cache.get(id)).filter(Boolean);
+      const nearest = nearestPost(posts, resolvedTarget);
+      return {
+        posts,
+        targetPostNumber: nearest ? nearest.post_number : resolvedTarget,
+      };
+    }
+
+    async function loadDown() {
+      if (bottomReached) return { posts: [], done: true };
+      const end = Math.min(stream.length, downCursor + PAGE_SIZE);
+      const ids = stream.slice(downCursor, end);
+      await fetchSlice(ids);
+      downCursor = end;
+      bottomReached = downCursor >= stream.length;
+      return {
+        posts: ids.map((id) => cache.get(id)).filter(Boolean),
+        done: bottomReached,
+      };
+    }
+
+    async function loadUp() {
+      if (topReached) return { posts: [], done: true };
+      const start = Math.max(0, upCursor - PAGE_SIZE);
+      const ids = stream.slice(start, upCursor);
+      await fetchSlice(ids);
+      upCursor = start;
+      topReached = upCursor === 0;
+      return {
+        posts: ids.map((id) => cache.get(id)).filter(Boolean),
+        done: topReached,
+      };
+    }
+
+    return {
+      init, loadInitial, loadDown, loadUp,
+      get topic() { return topic; },
+      get topReached() { return topReached; },
+      get bottomReached() { return bottomReached; },
+    };
   }
 
   /* ============ 6. 楼层归位 ============ */
@@ -1693,7 +1874,7 @@
             const loadingEl = en.target.querySelector(':scope > .ldp-sub-loading');
             if (loadingEl) loadingEl.style.display = 'block';
             try {
-              const replies = await fetchRepliesThrottled(`${BASE}/posts/${postId}/replies.json`);
+              const replies = await fetchJSON(`${BASE}/posts/${postId}/replies.json`, { signal: ctx.signal });
               if (loadingEl) loadingEl.style.display = 'none';
               if (!replies || !replies.length) return;
               ctx.subReplyState.set(postNumber, { all: replies, renderedCount: 0 });
@@ -1778,7 +1959,7 @@
     const track = rail.querySelector('.ldp-tl-track');
     const fill = rail.querySelector('.ldp-tl-fill');
     const thumb = rail.querySelector('.ldp-tl-thumb');
-    const totalPosts = Math.max(1, topic.posts_count || ctx.totalComments + 1);
+    const totalPosts = Math.max(1, topic.highest_post_number || topic.posts_count || ctx.totalComments + 1);
     let raf = 0;
     let loadingLatest = false;
 
@@ -1831,7 +2012,7 @@
       rail.classList.add('ldp-tl-loading');
       schedule();
       try {
-        await controls.loadAll();
+        await controls.loadToBottom();
         body.scrollTo({ top: body.scrollHeight, behavior: 'smooth' });
       } finally {
         loadingLatest = false;
@@ -1886,12 +2067,55 @@
       </div>
     </div>`;
 
-  /* ============ 13. 弹窗主体 + 循环泵加载 ============ */
-  let CURRENT_OVERLAY = null;
+  function waitForScrollEnd(el, timeoutMs) {
+    const limit = timeoutMs || 1200;
+    return new Promise((resolve) => {
+      let lastTop = el.scrollTop;
+      let stableSince = Date.now();
+      const started = Date.now();
+      const check = () => {
+        const current = el.scrollTop;
+        if (Math.abs(current - lastTop) < 1) {
+          if (Date.now() - stableSince >= 120 || Date.now() - started >= limit) {
+            resolve();
+            return;
+          }
+        } else {
+          lastTop = current;
+          stableSince = Date.now();
+        }
+        requestAnimationFrame(check);
+      };
+      requestAnimationFrame(check);
+    });
+  }
 
-  async function openModal(topicId) {
+  async function locatePost(targetPostNumber, ctx) {
+    if (!targetPostNumber || targetPostNumber <= 1) {
+      ctx.scrollRoot.scrollTop = 0;
+      return true;
+    }
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const node = ctx.nodeMap.get(Number(targetPostNumber));
+    if (!node) return false;
+    node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await waitForScrollEnd(ctx.scrollRoot);
+    node.classList.remove('ldp-flash');
+    void node.offsetWidth;
+    node.classList.add('ldp-flash');
+    setTimeout(() => node.classList.remove('ldp-flash'), 1700);
+    return true;
+  }
+
+  /* ============ 13. 弹窗主体 + 双向分片加载 ============ */
+  let CURRENT_OVERLAY = null;
+  let CURRENT_MODAL_CLOSE = null;
+
+  async function openModal(topicId, targetPostNumber) {
     closeUserCard();
-    if (CURRENT_OVERLAY) { CURRENT_OVERLAY.remove(); CURRENT_OVERLAY = null; }
+    if (CURRENT_MODAL_CLOSE) CURRENT_MODAL_CLOSE();
+    else if (CURRENT_OVERLAY) { CURRENT_OVERLAY.remove(); CURRENT_OVERLAY = null; }
+    const abortController = new AbortController();
     const overlay = document.createElement('div');
     overlay.className = 'ldp-overlay';
     overlay.innerHTML = `
@@ -1909,9 +2133,12 @@
           <div class="ldp-body">
             <div class="ldp-topic"></div>
             <div class="ldp-comments-header">评论<span class="ldp-comments-count"></span></div>
+            <div class="ldp-load-up-tip"><span class="ldp-tip-icon">⌛</span>正在向上加载…</div>
+            <div class="ldp-up-sentinel"></div>
             <div class="ldp-comments"><div class="ldp-comments-empty">暂无评论</div></div>
             <div class="ldp-loading-tip"><span class="ldp-tip-icon">⌛</span>正在加载评论…</div>
-            <div class="ldp-sentinel"></div>
+            <div class="ldp-down-sentinel"></div>
+            <div class="ldp-load-down-tip"><span class="ldp-tip-icon">⌛</span>正在向下加载…</div>
             <div class="ldp-loadmask">${SKELETON_HTML}</div>
           </div>
           <aside class="ldp-timeline" aria-label="帖子时间轴">
@@ -1954,8 +2181,11 @@
     const modal = overlay.querySelector('.ldp-modal'), body = overlay.querySelector('.ldp-body');
     const topicEl = overlay.querySelector('.ldp-topic'), commentsEl = overlay.querySelector('.ldp-comments');
     const countEl = overlay.querySelector('.ldp-comments-count'), emptyEl = overlay.querySelector('.ldp-comments-empty');
-    const sentinel = overlay.querySelector('.ldp-sentinel'), maskEl = overlay.querySelector('.ldp-loadmask');
-    const loadingTip = overlay.querySelector('.ldp-loading-tip');
+    const upSentinel = overlay.querySelector('.ldp-up-sentinel');
+    const downSentinel = overlay.querySelector('.ldp-down-sentinel');
+    const maskEl = overlay.querySelector('.ldp-loadmask');
+    const loadUpTip = overlay.querySelector('.ldp-load-up-tip');
+    const loadDownTip = overlay.querySelector('.ldp-load-down-tip');
     const footerEl = overlay.querySelector('.ldp-footer');
     const fLikeBtn = overlay.querySelector('.ldp-f-like'), fLikeCountEl = overlay.querySelector('.ldp-f-like-count');
     const fReplyBtn = overlay.querySelector('.ldp-f-reply'), fReplyCountEl = overlay.querySelector('.ldp-f-reply-count');
@@ -1963,28 +2193,41 @@
     const fOpenLink = overlay.querySelector('.ldp-f-open');
     const stopBase64Selection = bindModalBase64Selection(modal);
 
-    const loader = createLoader(topicId), tracker = createReadTracker(topicId, body);
+    const loader = createLoader(topicId, abortController.signal);
+    const tracker = createReadTracker(topicId, body);
     const ctx = {
       topicId, op: null, topicEl, commentsEl, countEl, emptyEl, scrollRoot: body,
       nodeMap: new Map(), pending: [], tracker, totalComments: 0, repliesIO: null,
       subReplyState: new Map(), // 楼中楼原始数据 + 已渲染数量的状态表
       footerReplyCountEl: fReplyCountEl, // 底部悬浮操作栏的评论数展示
       onPostsChanged: null,
+      signal: abortController.signal,
     };
     ctx.repliesIO = createRepliesIO(ctx);
 
-    let loading = false, done = false, pendingRetry = false, forcePumpAll = false;
-    let loadingPromise = Promise.resolve();
+    let closed = false;
+    let isAnchoring = true;
+    let loadingUp = false, loadingDown = false;
+    let upDone = false, downDone = false;
+    let upPromise = Promise.resolve(false), downPromise = Promise.resolve(false);
+    let upIO = null, downIO = null;
 
     const close = () => {
+      if (closed) return;
+      closed = true;
       closeUserCard();
+      abortController.abort();
       stopBase64Selection();
       tracker.stop();
       ctx.repliesIO.disconnect();
+      if (upIO) upIO.disconnect();
+      if (downIO) downIO.disconnect();
       overlay.remove();
       if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null;
+      if (CURRENT_MODAL_CLOSE === close) CURRENT_MODAL_CLOSE = null;
       document.removeEventListener('keydown', onEsc);
     };
+    CURRENT_MODAL_CLOSE = close;
     function onEsc(e) {
       if (e.key !== 'Escape') return;
       if (document.querySelector('.ldp-lightbox') || CURRENT_USER_CARD) return;
@@ -1994,53 +2237,120 @@
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     document.addEventListener('keydown', onEsc);
 
-    const sentinelVisible = () => { const br = body.getBoundingClientRect(), sr = sentinel.getBoundingClientRect(); return sr.top <= br.bottom + 300; };
+    const sentinelVisible = (sentinel) => {
+      const bodyRect = body.getBoundingClientRect();
+      const sentinelRect = sentinel.getBoundingClientRect();
+      return sentinelRect.top <= bodyRect.bottom + 300 && sentinelRect.bottom >= bodyRect.top - 300;
+    };
 
-    const pump = async (forceAll) => {
-      if (forceAll) forcePumpAll = true;
-      if (loading) return loadingPromise;
-      loading = true;
-      loadingPromise = (async () => {
-        // 只要还没加载完，进入循环前先亮出底部提示
-        if (!done) loadingTip.classList.add('show');
+    const updateBoundaryTips = () => {
+      let topTip = body.querySelector('.ldp-top-tip');
+      if (upDone && !topTip) {
+        topTip = document.createElement('div');
+        topTip.className = 'ldp-top-tip';
+        topTip.textContent = '已是最早的评论';
+        loadUpTip.insertAdjacentElement('beforebegin', topTip);
+      } else if (!upDone && topTip) {
+        topTip.remove();
+      }
+
+      let bottomTip = body.querySelector('.ldp-bottom-tip');
+      if (downDone) {
+        if (!bottomTip) {
+          bottomTip = document.createElement('div');
+          bottomTip.className = 'ldp-bottom-tip';
+          loadDownTip.insertAdjacentElement('afterend', bottomTip);
+        }
+        bottomTip.textContent = upDone ? '已加载全部评论' : '已加载到最新回复';
+      } else if (bottomTip) {
+        bottomTip.remove();
+      }
+    };
+
+    const notifyPostsChanged = () => {
+      reflowPending(ctx);
+      if (ctx.onPostsChanged) ctx.onPostsChanged();
+      updateBoundaryTips();
+    };
+
+    const pumpDown = () => {
+      if (isAnchoring || loadingDown || downDone || closed) return downPromise;
+      loadingDown = true;
+      loadDownTip.classList.add('show');
+      downPromise = (async () => {
         try {
-          while (!done && (forcePumpAll || sentinelVisible() || pendingRetry)) {
-            pendingRetry = false;
-            const { posts, done: isDone, retry } = await loader.next();
-            posts.forEach((p) => attachPost(p, ctx));
-            reflowPending(ctx);
-            if (ctx.onPostsChanged) ctx.onPostsChanged();
-            if (retry) {
-              pendingRetry = true;
-              await new Promise((r) => setTimeout(r, 400));
-              continue;
-            }
-            done = isDone;
-          }
-          if (done) forcePumpAll = false;
-          if (done && !overlay.querySelector('.ldp-bottom-tip')) {
-            const tip = document.createElement('div');
-            tip.className = 'ldp-bottom-tip';
-            tip.textContent = '已加载全部评论';
-            body.insertBefore(tip, sentinel);
-          }
-        } catch (e) {} finally {
-          loading = false;
-          // 本轮抓取结束（无论成功、失败或已到底）都收起提示
-          loadingTip.classList.remove('show');
+          const result = await loader.loadDown();
+          if (closed) return false;
+          result.posts.forEach((post) => attachPost(post, ctx));
+          downDone = result.done;
+          notifyPostsChanged();
+          return result.posts.length > 0 || result.done;
+        } catch (err) {
+          return false;
+        } finally {
+          loadingDown = false;
+          loadDownTip.classList.remove('show');
         }
       })();
-      return loadingPromise;
+      return downPromise;
+    };
+
+    const pumpUp = () => {
+      if (isAnchoring || loadingUp || upDone || closed || body.scrollTop <= 1) return upPromise;
+      loadingUp = true;
+      loadUpTip.classList.add('show');
+      upPromise = (async () => {
+        try {
+          const oldHeight = body.scrollHeight;
+          const oldTop = body.scrollTop;
+          const result = await loader.loadUp();
+          const loadedPosts = result.posts;
+          if (closed) return false;
+
+          if (loadedPosts.length) {
+            const fragment = document.createDocumentFragment();
+            const tempCtx = Object.assign({}, ctx, { commentsEl: fragment, onPostsChanged: null });
+            loadedPosts.forEach((post) => attachPost(post, tempCtx));
+            reflowPending(tempCtx);
+            ctx.pending = tempCtx.pending;
+            commentsEl.prepend(fragment);
+            await new Promise((resolve) => requestAnimationFrame(() => {
+              body.scrollTop = oldTop + (body.scrollHeight - oldHeight);
+              resolve();
+            }));
+          }
+
+          upDone = result.done;
+          notifyPostsChanged();
+          return loadedPosts.length > 0 || result.done;
+        } catch (err) {
+          return false;
+        } finally {
+          loadingUp = false;
+          loadUpTip.classList.remove('show');
+        }
+      })();
+      return upPromise;
+    };
+
+    const loadToBottom = async () => {
+      while (!downDone && !closed) {
+        const progressed = await pumpDown();
+        if (!progressed && !downDone) break;
+      }
     };
 
     try {
       const topic = await loader.init();
+      if (closed) return;
       ctx.lastReadPostNumber = Number(topic.last_read_post_number) || 0;
       tracker.setReadWaterline(ctx.lastReadPostNumber);
       ctx.op = topic._opUsername; ctx.totalComments = Math.max(0, (topic.posts_count || 1) - 1);
       overlay.querySelector('.ldp-title').textContent = topic.title;
       overlay.querySelector('.ldp-meta').textContent = `${topic.posts_count} 帖 · ${topic.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
       updateCommentsHeader(ctx);
+
+      if (topic._opPost) attachPost(topic._opPost, ctx);
 
       fOpenLink.href = `${BASE}/t/${topic.id}`;
       bindBookmark(fBookmarkBtn, topic);
@@ -2078,37 +2388,66 @@
         }
       });
       footerEl.hidden = false;
+
+      const resolvedTarget = resolveInitialTarget(topic, targetPostNumber);
+
+      const initial = await loader.loadInitial(resolvedTarget);
+      if (closed) return;
+      initial.posts.forEach((post) => attachPost(post, ctx));
+      reflowPending(ctx);
+      upDone = loader.topReached;
+      downDone = loader.bottomReached;
+
       ctx.onPostsChanged = bindTimeline(modal, ctx, topic, {
-        loadAll: () => pump(true),
+        loadToBottom,
       });
+      ctx.onPostsChanged();
 
       bindActions(modal, ctx);
       tracker.start();
 
-      const sentinelIO = new IntersectionObserver((entries) => { if (entries.some((en) => en.isIntersecting)) pump(); }, { root: body, rootMargin: '300px' });
-      sentinelIO.observe(sentinel);
-      body.addEventListener('scroll', () => { if (sentinelVisible()) pump(); }, { passive: true });
+      upIO = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) pumpUp();
+      }, { root: body, rootMargin: '300px 0px' });
+      downIO = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) pumpDown();
+      }, { root: body, rootMargin: '300px 0px' });
+      upIO.observe(upSentinel);
+      downIO.observe(downSentinel);
+      body.addEventListener('scroll', () => {
+        if (isAnchoring || closed) return;
+        if (sentinelVisible(upSentinel)) pumpUp();
+        if (sentinelVisible(downSentinel)) pumpDown();
+      }, { passive: true });
 
-      await pump();
       maskEl.classList.add('hide');
       setTimeout(() => maskEl.remove(), 300);
+
+      await locatePost(initial.targetPostNumber, ctx);
+      isAnchoring = false;
+      updateBoundaryTips();
+
+      if (sentinelVisible(upSentinel)) pumpUp();
+      if (sentinelVisible(downSentinel)) pumpDown();
     } catch (err) {
+      if (err && err.name === 'AbortError') return;
       if (maskEl) maskEl.remove();
       body.innerHTML = `<div class="ldp-error">加载失败：${esc(err.message)}</div>`;
     }
   }
 
-  /* ============ 14. 拦截标题点击 ============ */
+  /* ============ 14. 拦截标题 / 通知点击 ============ */
   document.addEventListener('click', function (e) {
     const a = e.target.closest('a.title, a.raw-topic-link, a.search-link, a.search-result-topic, a[href*="/t/"]');
     if (!a || a.classList.contains('ldp-link-open') || a.classList.contains('ldp-f-open')) return;
     const inMenu = !!a.closest(MENU_PANEL_SEL), inSearch = !!a.closest(SEARCH_SEL);
     const isTitle = a.classList.contains('title') || a.classList.contains('raw-topic-link') || a.classList.contains('search-link') || a.classList.contains('search-result-topic');
     if (!isTitle && !inMenu && !inSearch) return;
-    const m = (a.getAttribute('href') || '').match(/\/t\/(?:[^\/]+\/)?(\d+)/);
-    if (!m) return;
+    const parsed = parseTopicHref(a.getAttribute('href') || '');
+    if (!parsed) return;
     e.preventDefault(); e.stopPropagation();
-    openModal(m[1]);
+    const directTarget = inMenu && parsed.targetPostNumber ? parsed.targetPostNumber : 0;
+    openModal(parsed.topicId, directTarget);
   }, true);
 
   startBase64MenuObserver();
