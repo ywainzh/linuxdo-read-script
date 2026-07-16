@@ -1,14 +1,19 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.13
+// @version      1.1.14
 // @license      MIT
-// @description  在 LINUX DO 与 IDC Flare 列表页点击标题即可弹窗预览整帖，支持楼中楼、点赞、回复、收藏、原图灯箱和已读进度上报。
+// @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
 // @author       Fashion
 // @match        https://linux.do/*
 // @match        https://idcflare.com/*
 // @icon         https://cdn3.ldstatic.com/optimized/4X/6/a/6/6a6affc7b1ce8140279e959d32671304db06d5ab_2_180x180.png
-// @grant        none
+// @grant        GM.getValue
+// @grant        GM.setValue
+// @grant        GM.setClipboard
+// @grant        GM.xmlHttpRequest
+// @connect      127.0.0.1
+// @connect      localhost
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -56,6 +61,65 @@
     .ldp-head-btns{display:flex;gap:8px;align-items:center;}
     .ldp-close{cursor:pointer;border:none;background:transparent;font-size:22px;
       line-height:1;color:inherit;padding:0 4px;}
+    /* Obsidian 快照：只在主操作上使用品牌紫色，其余控件沿用论坛主题 */
+    .ldp-obsidian-actions{display:inline-flex;align-items:center;gap:6px;flex:none;}
+    .ldp-obsidian-save,.ldp-obsidian-settings{display:inline-flex;align-items:center;
+      justify-content:center;border:1px solid transparent;border-radius:7px;cursor:pointer;
+      font:600 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      transition:background-color .16s ease,border-color .16s ease,color .16s ease,opacity .16s ease;}
+    .ldp-obsidian-save{min-height:32px;gap:7px;padding:7px 10px;color:#fff;background:#7c3aed;}
+    .ldp-obsidian-save:hover{background:#6d28d9;}
+    .ldp-obsidian-save svg,.ldp-obsidian-settings svg{width:16px;height:16px;fill:currentColor;flex:none;}
+    .ldp-obsidian-settings{width:32px;height:32px;padding:0;color:var(--primary-medium,#667085);
+      background:var(--primary-very-low,#f7f7f8);border-color:var(--primary-low,#e5e7eb);}
+    .ldp-obsidian-settings:hover{color:#7c3aed;border-color:rgba(124,58,237,.42);
+      background:rgba(124,58,237,.08);}
+    .ldp-obsidian-save:disabled,.ldp-obsidian-settings:disabled{cursor:wait;opacity:.62;}
+    .ldp-obsidian-save:focus-visible,.ldp-obsidian-settings:focus-visible,
+    .ldp-obsidian-dialog button:focus-visible,.ldp-obsidian-dialog input:focus-visible,
+    .ldp-obsidian-dialog select:focus-visible{outline:2px solid #8b5cf6;outline-offset:2px;}
+    .ldp-obsidian-page-actions{width:max-content;margin:8px 0 8px auto;}
+    .ldp-obsidian-dialog-overlay{position:fixed;inset:0;z-index:2147483640;display:grid;
+      place-items:center;padding:20px;background:rgba(10,12,18,.58);backdrop-filter:blur(3px);}
+    .ldp-obsidian-dialog{width:min(540px,100%);max-height:calc(100vh - 40px);overflow:auto;
+      box-sizing:border-box;padding:22px;border:1px solid var(--primary-low,#e5e7eb);
+      border-radius:13px;color:var(--primary,#1f2937);background:var(--secondary,#fff);
+      box-shadow:0 22px 70px rgba(0,0,0,.34);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+    .ldp-obsidian-dialog-head{display:flex;align-items:flex-start;justify-content:space-between;
+      gap:16px;margin-bottom:16px;}
+    .ldp-obsidian-dialog h2{margin:0;font-size:20px;line-height:1.3;}
+    .ldp-obsidian-dialog-subtitle{margin:4px 0 0;color:var(--primary-medium,#667085);font-size:12px;}
+    .ldp-obsidian-dialog-close{border:0;background:transparent;color:inherit;cursor:pointer;
+      padding:0 4px;font-size:24px;line-height:1;}
+    .ldp-obsidian-dialog label{display:block;margin:13px 0 5px;font-weight:650;}
+    .ldp-obsidian-dialog input,.ldp-obsidian-dialog select{width:100%;box-sizing:border-box;
+      padding:9px 10px;border:1px solid var(--primary-low-mid,#cfd4dc);border-radius:7px;
+      color:var(--primary,#1f2937);background:var(--secondary,#fff);font:inherit;}
+    .ldp-obsidian-dialog-help{margin:5px 0 0;color:var(--primary-medium,#667085);font-size:12px;}
+    .ldp-obsidian-dialog-note{margin:0 0 14px;padding:10px 12px;border-left:3px solid #8b5cf6;
+      border-radius:0 7px 7px 0;background:rgba(124,58,237,.08);font-size:12px;}
+    .ldp-obsidian-dialog-status{min-height:21px;margin-top:12px;color:var(--primary-medium,#667085);
+      font-size:13px;}
+    .ldp-obsidian-dialog-status[data-type="error"]{color:var(--danger,#b42318);}
+    .ldp-obsidian-dialog-status[data-type="success"]{color:#15803d;}
+    .ldp-obsidian-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
+    .ldp-obsidian-dialog-actions button,.ldp-obsidian-test{border:0;border-radius:7px;
+      padding:8px 12px;cursor:pointer;font:inherit;font-size:13px;font-weight:600;line-height:1.2;}
+    .ldp-obsidian-dialog button:disabled{cursor:wait;opacity:.62;}
+    .ldp-obsidian-primary{color:#fff;background:#7c3aed;}
+    .ldp-obsidian-primary:hover{background:#6d28d9;}
+    .ldp-obsidian-secondary,.ldp-obsidian-test{color:var(--primary,#1f2937);
+      background:var(--primary-low,#e9eaec);}
+    .ldp-obsidian-test{margin-top:10px;}
+    .ldp-obsidian-toast{position:fixed;right:20px;bottom:20px;z-index:2147483641;
+      max-width:min(460px,calc(100vw - 40px));padding:11px 14px;border-radius:9px;
+      color:#fff;background:#24262d;box-shadow:0 10px 32px rgba(0,0,0,.28);
+      font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+    .ldp-obsidian-toast[data-type="success"]{background:#166534;}
+    .ldp-obsidian-toast[data-type="error"]{background:#b42318;}
+    @media (prefers-reduced-motion:reduce){
+      .ldp-obsidian-save,.ldp-obsidian-settings{transition:none;}
+    }
     .ldp-shell{flex:1;min-height:0;position:relative;display:flex;}
     .ldp-body{flex:1;min-width:0;min-height:0;position:relative;
       padding:8px 20px 20px;overflow-y:auto;overscroll-behavior:contain;
@@ -93,6 +157,11 @@
       outline:2px solid var(--tertiary,#08c);outline-offset:2px;}
     @media (max-width: 760px){
       .ldp-modal{width:96%;height:92vh;}
+      .ldp-obsidian-label{display:none;}
+      .ldp-obsidian-save{width:32px;padding:0;}
+      .ldp-obsidian-page-actions{margin-top:6px;}
+      .ldp-obsidian-dialog-overlay{padding:10px;}
+      .ldp-obsidian-dialog{max-height:calc(100vh - 20px);padding:18px;}
       .ldp-body{padding-right:76px;}
       .ldp-timeline{position:absolute;right:8px;top:8px;bottom:8px;z-index:4;
         width:58px;flex-basis:auto;padding:8px 6px;border:1px solid var(--primary-low,#eee);
@@ -391,7 +460,10 @@
     // 书签
     bookmark: '<path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/>',
     // 新标签页打开
-    newTab: '<path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>'
+    newTab: '<path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>',
+    // Obsidian 水晶与设置
+    obsidian: '<path d="M12 1.8 19.2 7l-1.8 11.1L12 22l-5.4-3.9L4.8 7 12 1.8Zm0 3L8 7.7l1.3 8.8 2.7 2 2.7-2L16 7.7 12 4.8Z"/>',
+    settings: '<path d="M19.4 13a7.8 7.8 0 0 0 .1-1 7.8 7.8 0 0 0-.1-1l2.1-1.6-2-3.4-2.5 1a7.7 7.7 0 0 0-1.7-1L15 3.3h-4L10.6 6a7.7 7.7 0 0 0-1.7 1L6.4 6l-2 3.4L6.5 11a7.8 7.8 0 0 0-.1 1 7.8 7.8 0 0 0 .1 1l-2.1 1.6 2 3.4 2.5-1a7.7 7.7 0 0 0 1.7 1l.4 2.7h4l.4-2.7a7.7 7.7 0 0 0 1.7-1l2.5 1 2-3.4L19.4 13ZM13 15.5A3.5 3.5 0 1 1 13 8a3.5 3.5 0 0 1 0 7.5Z"/>'
   };
 
   /* ============ 2. 工具 ============ */
@@ -576,7 +648,641 @@
     return lastRead > 0 && lastRead < highest ? lastRead + 1 : 1;
   }
 
-  /* ============ 2.5 Boosts 气泡渲染辅助 ============ */
+  /* ============ 2.5 保存首帖快照到 Obsidian ============ */
+  // Markdown 转换与写入流程移植并改编自 zsq 的 MIT 脚本：
+  // https://greasyfork.org/zh-CN/scripts/587200-linux-do-%E5%B8%96%E5%AD%90%E4%BF%9D%E5%AD%98%E5%88%B0-obsidian
+  const OBSIDIAN_SETTINGS_KEY = 'ldp-obsidian-settings-v1';
+  const OBSIDIAN_DEFAULT_SETTINGS = {
+    mode: 'rest',
+    apiUrl: 'http://127.0.0.1:27123',
+    apiKey: '',
+    vaultName: '',
+    baseFolder: '论坛收藏',
+  };
+  let OBSIDIAN_SAVING = false;
+  let OBSIDIAN_SAVE_TEXT = '保存到 Obsidian';
+  let CURRENT_OBSIDIAN_DIALOG_CLOSE = null;
+  let OBSIDIAN_PAGE_ACTIONS_RAF = 0;
+  let OBSIDIAN_CATEGORY_SITE = null;
+
+  function getGMMethod(name) {
+    if (typeof GM !== 'undefined' && GM && typeof GM[name] === 'function') {
+      return GM[name].bind(GM);
+    }
+    throw new Error('当前脚本管理器不支持所需的 GM.' + name + ' 接口');
+  }
+
+  async function loadObsidianSettings() {
+    const stored = await getGMMethod('getValue')(OBSIDIAN_SETTINGS_KEY, {});
+    const value = stored && typeof stored === 'object' ? stored : {};
+    const settings = Object.assign({}, OBSIDIAN_DEFAULT_SETTINGS, value);
+    if (settings.mode !== 'rest' && settings.mode !== 'uri') settings.mode = 'rest';
+    return settings;
+  }
+
+  async function persistObsidianSettings(settings) {
+    await getGMMethod('setValue')(OBSIDIAN_SETTINGS_KEY, settings);
+  }
+
+  function obsidianErrorMessage(error) {
+    if (error && error.name === 'AbortError') return '操作已取消';
+    return error instanceof Error ? error.message : String(error || '未知错误');
+  }
+
+  function showObsidianToast(message, type, duration) {
+    document.querySelectorAll('.ldp-obsidian-toast').forEach((node) => node.remove());
+    const toast = document.createElement('div');
+    toast.className = 'ldp-obsidian-toast';
+    toast.dataset.type = type || 'info';
+    toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), duration || (type === 'error' ? 8000 : 5500));
+  }
+
+  function setObsidianSaveState(text, busy) {
+    OBSIDIAN_SAVE_TEXT = text;
+    OBSIDIAN_SAVING = !!busy;
+    document.querySelectorAll('[data-ldp-obsidian-save]').forEach((button) => {
+      const label = button.querySelector('.ldp-obsidian-label');
+      if (label) label.textContent = text;
+      button.disabled = !!busy;
+      button.setAttribute('aria-busy', busy ? 'true' : 'false');
+    });
+    document.querySelectorAll('[data-ldp-obsidian-settings]').forEach((button) => {
+      button.disabled = !!busy;
+    });
+  }
+
+  function createObsidianActionGroup(topicId, topicProvider, extraClass) {
+    const group = document.createElement('div');
+    group.className = 'ldp-obsidian-actions' + (extraClass ? ` ${extraClass}` : '');
+    group.dataset.topicId = String(topicId);
+    group.innerHTML = `
+      <button type="button" class="ldp-obsidian-save" data-ldp-obsidian-save
+        title="将楼主首帖保存为新的 Obsidian 快照">
+        <svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.obsidian}</svg>
+        <span class="ldp-obsidian-label"></span>
+      </button>
+      <button type="button" class="ldp-obsidian-settings" data-ldp-obsidian-settings
+        title="设置 Obsidian 连接" aria-label="设置 Obsidian 连接">
+        <svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.settings}</svg>
+      </button>`;
+    const saveButton = group.querySelector('[data-ldp-obsidian-save]');
+    const settingsButton = group.querySelector('[data-ldp-obsidian-settings]');
+    saveButton.querySelector('.ldp-obsidian-label').textContent = OBSIDIAN_SAVE_TEXT;
+    saveButton.disabled = OBSIDIAN_SAVING;
+    saveButton.setAttribute('aria-busy', OBSIDIAN_SAVING ? 'true' : 'false');
+    settingsButton.disabled = OBSIDIAN_SAVING;
+    saveButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const suppliedTopic = typeof topicProvider === 'function' ? topicProvider() : null;
+      saveTopicToObsidian(topicId, suppliedTopic);
+    });
+    settingsButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showObsidianSettings();
+    });
+    return group;
+  }
+
+  function validateObsidianApiUrl(value) {
+    let url;
+    try { url = new URL(String(value || '').trim()); }
+    catch (error) { throw new Error('REST API 地址格式不正确'); }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error('REST API 只支持 HTTP 或 HTTPS');
+    }
+    if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {
+      throw new Error('为保护 API Key，REST API 地址只允许 localhost 或 127.0.0.1');
+    }
+    if (url.username || url.password || url.search || url.hash) {
+      throw new Error('REST API 地址不能包含账号、查询参数或锚点');
+    }
+    return url.origin;
+  }
+
+  function obsidianGMRequest(options) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (handler) => (value) => {
+        if (settled) return;
+        settled = true;
+        handler(value);
+      };
+      const onResolve = finish(resolve);
+      const onReject = finish(reject);
+      const requestOptions = Object.assign({}, options, {
+        timeout: 20000,
+        onload: onResolve,
+        onerror: () => onReject(new Error('无法连接 Obsidian Local REST API')),
+        ontimeout: () => onReject(new Error('连接 Obsidian Local REST API 超时')),
+        onabort: () => onReject(new Error('Obsidian 请求已取消')),
+      });
+      try {
+        const request = getGMMethod('xmlHttpRequest')(requestOptions);
+        if (request && typeof request.then === 'function') request.then(onResolve, onReject);
+      } catch (error) {
+        onReject(error);
+      }
+    });
+  }
+
+  async function testObsidianRest(apiUrl, apiKey) {
+    const origin = validateObsidianApiUrl(apiUrl);
+    if (!String(apiKey || '').trim()) throw new Error('请先填写 Local REST API Key');
+    const response = await obsidianGMRequest({
+      method: 'GET',
+      url: origin + '/',
+      headers: { Authorization: `Bearer ${String(apiKey).trim()}` },
+    });
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error('服务响应异常：HTTP ' + response.status);
+    }
+  }
+
+  async function saveObsidianWithRest(markdown, vaultPath, settings) {
+    const origin = validateObsidianApiUrl(settings.apiUrl);
+    const apiKey = String(settings.apiKey || '').trim();
+    if (!apiKey) throw new Error('请先填写 Local REST API Key');
+    const encodedPath = vaultPath.split('/').map(encodeURIComponent).join('/');
+    const response = await obsidianGMRequest({
+      method: 'PUT',
+      url: `${origin}/vault/${encodedPath}`,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'text/markdown; charset=utf-8',
+      },
+      data: markdown,
+    });
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error('Obsidian 写入失败：HTTP ' + response.status);
+    }
+  }
+
+  async function saveObsidianWithUri(markdown, vaultPath, settings) {
+    await getGMMethod('setClipboard')(markdown, 'text');
+    const params = new URLSearchParams();
+    const vaultName = String(settings.vaultName || '').trim();
+    if (vaultName) params.set('vault', vaultName);
+    params.set('file', vaultPath);
+    params.set('clipboard', 'true');
+    const link = document.createElement('a');
+    link.href = `obsidian://new?${params.toString()}`;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  async function showObsidianSettings() {
+    if (CURRENT_OBSIDIAN_DIALOG_CLOSE) CURRENT_OBSIDIAN_DIALOG_CLOSE(false);
+    const settings = await loadObsidianSettings();
+    const returnFocus = document.activeElement;
+    return new Promise((resolve) => {
+      let closed = false;
+      const overlay = document.createElement('div');
+      overlay.className = 'ldp-obsidian-dialog-overlay';
+      overlay.innerHTML = `
+        <form class="ldp-obsidian-dialog" role="dialog" aria-modal="true" aria-labelledby="ldp-obsidian-dialog-title">
+          <div class="ldp-obsidian-dialog-head">
+            <div>
+              <h2 id="ldp-obsidian-dialog-title">保存到 Obsidian</h2>
+              <p class="ldp-obsidian-dialog-subtitle">每次保存都会创建一份新的首帖快照</p>
+            </div>
+            <button type="button" class="ldp-obsidian-dialog-close" title="关闭" aria-label="关闭设置">×</button>
+          </div>
+          <p class="ldp-obsidian-dialog-note">REST 模式不会切换窗口，但需要 Obsidian 正在运行并启用 Local REST API；URI 模式无需插件，会打开 Obsidian 并使用剪贴板。</p>
+          <label for="ldp-obsidian-mode">写入方式</label>
+          <select id="ldp-obsidian-mode">
+            <option value="rest">直接写入 Vault（推荐）</option>
+            <option value="uri">Obsidian URI（会打开 Obsidian）</option>
+          </select>
+          <div data-ldp-rest-fields>
+            <label for="ldp-obsidian-api-url">Local REST API 地址</label>
+            <input id="ldp-obsidian-api-url" type="url" inputmode="url" autocomplete="off">
+            <label for="ldp-obsidian-api-key">API Key</label>
+            <input id="ldp-obsidian-api-key" type="password" autocomplete="off">
+            <p class="ldp-obsidian-dialog-help">Key 只保存在油猴私有存储，并且只能发送到本机地址。</p>
+            <button type="button" class="ldp-obsidian-test">测试连接</button>
+          </div>
+          <div data-ldp-uri-fields>
+            <label for="ldp-obsidian-vault">Vault 名称</label>
+            <input id="ldp-obsidian-vault" type="text" placeholder="留空则使用当前 Vault">
+            <p class="ldp-obsidian-dialog-help">保存时会复制 Markdown，并调用 obsidian://new。</p>
+          </div>
+          <label for="ldp-obsidian-folder">基础目录</label>
+          <input id="ldp-obsidian-folder" type="text" placeholder="论坛收藏">
+          <p class="ldp-obsidian-dialog-help">实际路径会自动追加站点、分类和带时间戳的文件名。</p>
+          <div class="ldp-obsidian-dialog-status" aria-live="polite"></div>
+          <div class="ldp-obsidian-dialog-actions">
+            <button type="button" class="ldp-obsidian-secondary" data-action="cancel">取消</button>
+            <button type="submit" class="ldp-obsidian-primary">保存设置</button>
+          </div>
+        </form>`;
+      document.body.appendChild(overlay);
+      const form = overlay.querySelector('form');
+      const modeInput = overlay.querySelector('#ldp-obsidian-mode');
+      const apiUrlInput = overlay.querySelector('#ldp-obsidian-api-url');
+      const apiKeyInput = overlay.querySelector('#ldp-obsidian-api-key');
+      const vaultInput = overlay.querySelector('#ldp-obsidian-vault');
+      const folderInput = overlay.querySelector('#ldp-obsidian-folder');
+      const restFields = overlay.querySelector('[data-ldp-rest-fields]');
+      const uriFields = overlay.querySelector('[data-ldp-uri-fields]');
+      const status = overlay.querySelector('.ldp-obsidian-dialog-status');
+      const testButton = overlay.querySelector('.ldp-obsidian-test');
+      modeInput.value = settings.mode;
+      apiUrlInput.value = settings.apiUrl;
+      apiKeyInput.value = settings.apiKey;
+      vaultInput.value = settings.vaultName;
+      folderInput.value = settings.baseFolder;
+
+      function updateModeFields() {
+        restFields.hidden = modeInput.value !== 'rest';
+        uriFields.hidden = modeInput.value !== 'uri';
+      }
+      function setStatus(message, type) {
+        status.textContent = message || '';
+        status.dataset.type = type || 'info';
+      }
+      function close(result) {
+        if (closed) return;
+        closed = true;
+        overlay.remove();
+        document.removeEventListener('keydown', onKeyDown, true);
+        if (CURRENT_OBSIDIAN_DIALOG_CLOSE === close) CURRENT_OBSIDIAN_DIALOG_CLOSE = null;
+        if (returnFocus && returnFocus.isConnected && typeof returnFocus.focus === 'function') {
+          returnFocus.focus({ preventScroll: true });
+        }
+        resolve(result);
+      }
+      function onKeyDown(event) {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        close(false);
+      }
+      CURRENT_OBSIDIAN_DIALOG_CLOSE = close;
+      modeInput.addEventListener('change', updateModeFields);
+      updateModeFields();
+      overlay.querySelector('.ldp-obsidian-dialog-close').addEventListener('click', () => close(false));
+      overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => close(false));
+      overlay.addEventListener('click', (event) => { if (event.target === overlay) close(false); });
+      document.addEventListener('keydown', onKeyDown, true);
+      testButton.addEventListener('click', async () => {
+        testButton.disabled = true;
+        setStatus('正在测试连接…');
+        try {
+          await testObsidianRest(apiUrlInput.value, apiKeyInput.value);
+          setStatus('服务连接成功。', 'success');
+        } catch (error) {
+          setStatus(obsidianErrorMessage(error), 'error');
+        } finally {
+          testButton.disabled = false;
+        }
+      });
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          const nextSettings = {
+            mode: modeInput.value,
+            apiUrl: apiUrlInput.value.trim(),
+            apiKey: apiKeyInput.value.trim(),
+            vaultName: vaultInput.value.trim(),
+            baseFolder: folderInput.value.trim() || OBSIDIAN_DEFAULT_SETTINGS.baseFolder,
+          };
+          if (nextSettings.mode === 'rest') {
+            nextSettings.apiUrl = validateObsidianApiUrl(nextSettings.apiUrl);
+            if (!nextSettings.apiKey) throw new Error('请填写 Local REST API Key');
+          }
+          await persistObsidianSettings(nextSettings);
+          close(true);
+        } catch (error) {
+          setStatus(obsidianErrorMessage(error), 'error');
+        }
+      });
+      modeInput.focus({ preventScroll: true });
+    });
+  }
+
+  function makeObsidianAbsoluteUrl(value) {
+    if (!value || /^(?:#|data:|mailto:|obsidian:)/i.test(value)) return value;
+    try { return new URL(value, BASE + '/').href; }
+    catch (error) { return value; }
+  }
+
+  function normalizeObsidianCodeLanguage(language, value) {
+    const normalized = String(language || '').toLowerCase();
+    if (normalized && normalized !== 'auto') return normalized;
+    if (/\b(?:irm|invoke-restmethod)\b|\|\s*iex\b|\$env:/i.test(value)) return 'powershell';
+    if (/^\s*(?:#!.*\b(?:bash|sh)|(?:sudo\s+)?(?:bash|sh|curl|wget)\b)/im.test(value)) return 'bash';
+    const trimmed = String(value || '').trim();
+    if (trimmed && /^[\[{]/.test(trimmed)) {
+      try { JSON.parse(trimmed); return 'json'; }
+      catch (error) { /* 继续按纯文本处理 */ }
+    }
+    return 'text';
+  }
+
+  function quoteObsidianMarkdown(markdown, prefix) {
+    const actualPrefix = prefix || '> ';
+    return String(markdown || '').split('\n')
+        .map((line) => line ? actualPrefix + line : actualPrefix.trimEnd()).join('\n');
+  }
+
+  function cookedHtmlToObsidianMarkdown(cooked) {
+    const container = document.createElement('div');
+    container.innerHTML = cooked || '';
+    container.querySelectorAll('script,style,iframe,object,embed,form,button,.lightbox-wrapper .meta')
+        .forEach((node) => node.remove());
+    container.querySelectorAll('img.emoji').forEach((image) => {
+      image.replaceWith(document.createTextNode(image.getAttribute('alt') || ''));
+    });
+    container.querySelectorAll('a.anchor').forEach((anchor) => anchor.remove());
+    const codeBlocks = new Map();
+    let codeBlockIndex = 0;
+
+    function renderChildren(element) {
+      return Array.from(element.childNodes).map((node) => renderNode(node)).join('');
+    }
+    function renderList(element, ordered) {
+      const items = Array.from(element.children).filter((child) => child.tagName === 'LI');
+      return items.map((item, index) => {
+        const nestedLists = Array.from(item.children).filter((child) => child.tagName === 'UL' || child.tagName === 'OL');
+        const body = Array.from(item.childNodes).filter((node) => !nestedLists.includes(node))
+            .map((node) => renderNode(node)).join('').trim().replace(/\n{2,}/g, '\n');
+        const marker = ordered ? `${index + 1}. ` : '- ';
+        const renderedBody = body.split('\n')
+            .map((line, lineIndex) => lineIndex === 0 ? marker + line : '  ' + line).join('\n');
+        const renderedNested = nestedLists.map((nested) => renderNode(nested).trim()).filter(Boolean)
+            .map((nested) => nested.split('\n').map((line) => '  ' + line).join('\n')).join('\n');
+        return [renderedBody, renderedNested].filter(Boolean).join('\n');
+      }).join('\n') + '\n\n';
+    }
+    function renderTable(element) {
+      const rows = Array.from(element.rows || []);
+      if (!rows.length) return '';
+      const values = rows.map((row) => Array.from(row.cells).map((cell) => renderChildren(cell)
+          .trim().replace(/\|/g, '\\|').replace(/\s*\n+\s*/g, ' / ')));
+      const width = Math.max(...values.map((row) => row.length));
+      const normalized = values.map((row) => row.concat(Array.from({ length: width - row.length }, () => '')));
+      return [
+        `| ${normalized[0].join(' | ')} |`,
+        `| ${Array.from({ length: width }, () => '---').join(' | ')} |`,
+        ...normalized.slice(1).map((row) => `| ${row.join(' | ')} |`),
+        '',
+      ].join('\n');
+    }
+    function renderNode(node) {
+      if (node.nodeType === Node.TEXT_NODE) return String(node.nodeValue || '').replace(/[\t\r\n ]+/g, ' ');
+      if (node.nodeType !== Node.ELEMENT_NODE) return '';
+      const element = node;
+      const tag = element.tagName;
+      const body = () => renderChildren(element).trim();
+      if (tag === 'BR') return '\n';
+      if (/^H[1-6]$/.test(tag)) return `${'#'.repeat(Math.min(Number(tag.slice(1)) + 2, 6))} ${body()}\n\n`;
+      if (['P', 'DIV', 'SECTION', 'ARTICLE', 'FIGURE', 'FIGCAPTION'].includes(tag)) {
+        const content = body();
+        return content ? content + '\n\n' : '';
+      }
+      if (tag === 'STRONG' || tag === 'B') return `**${body()}**`;
+      if (tag === 'EM' || tag === 'I') return `*${body()}*`;
+      if (tag === 'DEL' || tag === 'S' || tag === 'STRIKE') return `~~${body()}~~`;
+      if (tag === 'MARK') return `==${body()}==`;
+      if (tag === 'A') {
+        const href = makeObsidianAbsoluteUrl(element.getAttribute('href') || '');
+        const label = body() || href;
+        return href ? `[${label}](${href})` : label;
+      }
+      if (tag === 'IMG') {
+        const source = element.getAttribute('data-orig-src') || element.getAttribute('data-large-uri')
+            || element.getAttribute('data-src') || element.getAttribute('src');
+        if (!source) return element.getAttribute('alt') || '';
+        const alt = String(element.getAttribute('alt') || '图片').replace(/[\[\]]/g, '');
+        return `![${alt}](<${makeObsidianAbsoluteUrl(source)}>)`;
+      }
+      if (tag === 'PRE') {
+        const code = element.querySelector('code');
+        const value = String((code && code.textContent) || element.textContent || '').replace(/^\n|\n$/g, '');
+        const className = (code && code.className) || element.className || '';
+        const match = className.match(/(?:lang(?:uage)?-)([\w+-]+)/i);
+        const language = match && match[1];
+        const runs = Array.from(value.matchAll(/`+/g), (item) => item[0].length + 1);
+        const fence = '`'.repeat(Math.max(3, ...runs));
+        const token = `LDP_OBSIDIAN_CODE_${codeBlockIndex}_PLACEHOLDER`;
+        codeBlockIndex += 1;
+        codeBlocks.set(token, `${fence}${normalizeObsidianCodeLanguage(language, value)}\n${value}\n${fence}`);
+        return `\n\n${token}\n\n`;
+      }
+      if (tag === 'CODE') {
+        const value = element.textContent || '';
+        const runs = Array.from(value.matchAll(/`+/g), (item) => item[0].length + 1);
+        const fence = '`'.repeat(Math.max(1, ...runs));
+        return `${fence}${value}${fence}`;
+      }
+      if (tag === 'ASIDE' && element.classList.contains('quote')) {
+        const titleElement = element.querySelector('.quote-title__text-content a')
+            || element.querySelector('.title a') || element.querySelector('.title');
+        const title = String((titleElement && titleElement.textContent) || '引用').replace(/\s+/g, ' ').trim();
+        const quoted = element.querySelector('blockquote');
+        const content = quoted ? renderChildren(quoted).trim() : body();
+        return [`> [!quote] ${title}`, quoteObsidianMarkdown(content), ''].join('\n') + '\n';
+      }
+      if (tag === 'BLOCKQUOTE') return quoteObsidianMarkdown(body()) + '\n\n';
+      if (tag === 'UL') return renderList(element, false);
+      if (tag === 'OL') return renderList(element, true);
+      if (tag === 'TABLE') return renderTable(element);
+      if (tag === 'HR') return '\n---\n\n';
+      if (tag === 'KBD') return `\`${element.textContent || ''}\``;
+      return renderChildren(element);
+    }
+
+    let markdown = renderChildren(container).replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n')
+        .replace(/\n[ \t]+/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    for (const [token, codeBlock] of codeBlocks) markdown = markdown.replace(token, codeBlock);
+    return markdown;
+  }
+
+  function obsidianYamlString(value) {
+    return JSON.stringify(String(value == null ? '' : value));
+  }
+
+  function formatObsidianDateTime(value) {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return String(value || '');
+    return new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+      second: '2-digit', hour12: false,
+    }).format(date).replaceAll('/', '-');
+  }
+
+  function formatObsidianSnapshotTime(date) {
+    const pad = (value, size) => String(value).padStart(size || 2, '0');
+    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-` +
+        `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${pad(date.getMilliseconds(), 3)}`;
+  }
+
+  function sanitizeObsidianPathSegment(value, fallback) {
+    const sanitized = String(value || '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+        .replace(/\.{2,}/g, '.').replace(/\s+/g, ' ').replace(/[. ]+$/g, '').trim();
+    return (sanitized || fallback || '').slice(0, 90);
+  }
+
+  function obsidianSiteInfo() {
+    if (location.hostname === 'idcflare.com') {
+      return { directory: 'IDC Flare', source: 'idcflare.com', tag: 'idc-flare' };
+    }
+    return { directory: 'LINUX DO', source: 'linux.do', tag: 'linux-do' };
+  }
+
+  async function getObsidianCategoryName(topic) {
+    const direct = String((topic.category && topic.category.name) || topic.category_name || '').trim();
+    if (direct) return direct;
+    if (!topic.category_id) return '未分类';
+    try {
+      if (!OBSIDIAN_CATEGORY_SITE) {
+        OBSIDIAN_CATEGORY_SITE = await fetchJSON(`${BASE}/site.json`, { cache: 'force-cache' });
+      }
+      const categories = OBSIDIAN_CATEGORY_SITE.categories || [];
+      const category = categories.find((item) => Number(item.id) === Number(topic.category_id));
+      return String((category && category.name) || '').trim() || '未分类';
+    } catch (error) {
+      return '未分类';
+    }
+  }
+
+  async function loadObsidianTopic(topicId, suppliedTopic) {
+    let topic = suppliedTopic && String(suppliedTopic.id) === String(topicId) ? suppliedTopic : null;
+    if (!topic) topic = await fetchJSON(`${BASE}/t/${topicId}.json`, { cache: 'no-store' });
+    let firstPost = topic._opPost || ((topic.post_stream && topic.post_stream.posts) || [])
+        .find((post) => Number(post.post_number) === 1);
+    if (!firstPost) {
+      const anchor = await fetchJSON(`${BASE}/t/${topicId}.json?post_number=1`, { cache: 'no-store' });
+      firstPost = ((anchor.post_stream && anchor.post_stream.posts) || [])
+          .find((post) => Number(post.post_number) === 1);
+    }
+    if (!firstPost || !firstPost.cooked) throw new Error('没有读取到楼主首帖，可能是帖子权限不足');
+    topic._obsidianFirstPost = firstPost;
+    topic._obsidianCategoryName = await getObsidianCategoryName(topic);
+    return topic;
+  }
+
+  function buildObsidianVaultPath(settings, topic, snapshotDate) {
+    const baseSegments = String(settings.baseFolder || OBSIDIAN_DEFAULT_SETTINGS.baseFolder).split('/')
+        .map((segment) => sanitizeObsidianPathSegment(segment, '')).filter(Boolean);
+    const site = obsidianSiteInfo();
+    const category = sanitizeObsidianPathSegment(topic._obsidianCategoryName, '未分类');
+    const title = sanitizeObsidianPathSegment(topic.title, '未命名主题');
+    const filename = `${topic.id}-${title}-${formatObsidianSnapshotTime(snapshotDate)}.md`;
+    return baseSegments.concat(site.directory, category, filename).join('/');
+  }
+
+  function buildObsidianMarkdown(topic, snapshotDate) {
+    const firstPost = topic._obsidianFirstPost;
+    const site = obsidianSiteInfo();
+    const sourceUrl = `${BASE}/t/${topic.slug || 'topic'}/${topic.id}`;
+    const sourceTags = Array.isArray(topic.tags)
+      ? topic.tags.map((tag) => typeof tag === 'string' ? tag : tag && tag.name).filter(Boolean)
+      : [];
+    const tags = Array.from(new Set([site.tag].concat(sourceTags)));
+    const author = firstPost.username || firstPost.display_username || 'unknown';
+    const frontmatter = [
+      '---',
+      `title: ${obsidianYamlString(topic.title)}`,
+      `source: ${obsidianYamlString(sourceUrl)}`,
+      `source_site: ${obsidianYamlString(site.source)}`,
+      `topic_id: ${topic.id}`,
+      `category: ${obsidianYamlString(topic._obsidianCategoryName || '未分类')}`,
+      `author: ${obsidianYamlString(author)}`,
+      `created_at: ${obsidianYamlString(firstPost.created_at || topic.created_at)}`,
+      `updated_at: ${obsidianYamlString(firstPost.updated_at || firstPost.created_at)}`,
+      `saved_at: ${obsidianYamlString(snapshotDate.toISOString())}`,
+      'saved_scope: "first_post"',
+      `tags: ${JSON.stringify(tags)}`,
+      '---',
+    ].join('\n');
+    const body = cookedHtmlToObsidianMarkdown(firstPost.cooked);
+    const information = [
+      '> [!info] 帖子信息',
+      `> - **原帖链接**：[打开原帖](${sourceUrl})`,
+      `> - **站点**：${site.directory}`,
+      `> - **分类**：${topic._obsidianCategoryName || '未分类'}`,
+      `> - **楼主**：@${author}`,
+      `> - **发布时间**：${formatObsidianDateTime(firstPost.created_at || topic.created_at)}`,
+      '> - **保存范围**：仅楼主首帖',
+    ].join('\n');
+    return [frontmatter, '', `# ${topic.title}`, '', information, '', '## 主帖', '', body, '',
+      `— [返回原帖](${sourceUrl})`, ''].join('\n');
+  }
+
+  async function saveTopicToObsidian(topicId, suppliedTopic) {
+    if (OBSIDIAN_SAVING) return;
+    setObsidianSaveState('准备中…', true);
+    try {
+      let settings = await loadObsidianSettings();
+      if (settings.mode === 'rest' && !String(settings.apiKey || '').trim()) {
+        setObsidianSaveState('等待配置…', true);
+        const configured = await showObsidianSettings();
+        if (!configured) return;
+        settings = await loadObsidianSettings();
+      }
+      setObsidianSaveState('读取首帖…', true);
+      const topic = await loadObsidianTopic(topicId, suppliedTopic);
+      setObsidianSaveState('转换 Markdown…', true);
+      const snapshotDate = new Date();
+      const markdown = buildObsidianMarkdown(topic, snapshotDate);
+      const vaultPath = buildObsidianVaultPath(settings, topic, snapshotDate);
+      if (settings.mode === 'rest') {
+        setObsidianSaveState('写入 Obsidian…', true);
+        await saveObsidianWithRest(markdown, vaultPath, settings);
+        showObsidianToast(`已保存 Obsidian 快照：${vaultPath}`, 'success');
+      } else {
+        setObsidianSaveState('打开 Obsidian…', true);
+        await saveObsidianWithUri(markdown, vaultPath, settings);
+        showObsidianToast(`Markdown 已复制，正在打开 Obsidian：${vaultPath}`, 'success');
+      }
+    } catch (error) {
+      showObsidianToast(obsidianErrorMessage(error), 'error');
+    } finally {
+      setObsidianSaveState('保存到 Obsidian', false);
+    }
+  }
+
+  function syncObsidianPageActions() {
+    const parsed = parseTopicHref(location.href);
+    const existing = document.querySelector('.ldp-obsidian-page-actions');
+    if (!parsed) {
+      if (existing) existing.remove();
+      return;
+    }
+    const title = document.querySelector('#topic-title h1, #topic-title .fancy-title, .topic-title h1');
+    if (!title) return;
+    const host = title.closest('.title-wrapper') || title.parentElement;
+    if (!host) return;
+    if (existing && existing.parentElement === host && existing.dataset.topicId === String(parsed.topicId)) return;
+    if (existing) existing.remove();
+    host.appendChild(createObsidianActionGroup(parsed.topicId, null, 'ldp-obsidian-page-actions'));
+  }
+
+  function scheduleObsidianPageActions() {
+    if (OBSIDIAN_PAGE_ACTIONS_RAF) return;
+    OBSIDIAN_PAGE_ACTIONS_RAF = requestAnimationFrame(() => {
+      OBSIDIAN_PAGE_ACTIONS_RAF = 0;
+      syncObsidianPageActions();
+    });
+  }
+
+  function startObsidianPageActions() {
+    scheduleObsidianPageActions();
+    const observer = new MutationObserver(scheduleObsidianPageActions);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    window.addEventListener('popstate', scheduleObsidianPageActions);
+    window.addEventListener('hashchange', scheduleObsidianPageActions);
+  }
+
+  /* ============ 2.6 Boosts 气泡渲染辅助 ============ */
   function renderBoosts(boosts) {
     if (!boosts || !boosts.length) return '';
     return boosts.map((b) => {
@@ -2270,6 +2976,11 @@
     const stopBase64Selection = bindModalBase64Selection(modal);
 
     const loader = createLoader(topicId, abortController.signal);
+    const modalObsidianActions = createObsidianActionGroup(topicId, () => loader.topic);
+    overlay.querySelector('.ldp-head-btns').insertBefore(
+      modalObsidianActions,
+      overlay.querySelector('.ldp-close'),
+    );
     const tracker = createReadTracker(topicId, body);
     const ctx = {
       topicId, op: null, topicEl, commentsEl, countEl, emptyEl, scrollRoot: body,
@@ -2518,4 +3229,5 @@
   }, true);
 
   startBase64MenuObserver();
+  startObsidianPageActions();
 })();
