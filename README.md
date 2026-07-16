@@ -2,7 +2,7 @@
 
 > 在 LINUX DO 与 IDC Flare 列表页点击标题即可弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读进度与 Obsidian 首帖快照——无需离开列表页，也无需反复返回。
 
-![version](https://img.shields.io/badge/version-1.1.14-blue)
+![version](https://img.shields.io/badge/version-1.1.15-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-red)](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)
@@ -26,7 +26,7 @@
 - **整帖收藏 / 取消收藏**：调用 Discourse 书签接口。
 - **原图灯箱**：点击正文图片、图片信息条或图片右下角的放大控件，均以原图地址（外层 `a.lightbox` 的 `href`）打开脚本灯箱；点图片、点空白、按 Esc、点右上角 × 均可关闭。
 - **Base64 解码**：在原帖或弹窗正文中选中 Base64 文本，可从浮动菜单直接解码，并复制或关闭解码结果。
-- **保存到 Obsidian**：原帖标题区与阅读弹窗均可把楼主首帖保存为独立 Markdown 快照；支持 Local REST API 静默写入和 Obsidian URI 兜底模式。
+- **保存到 Obsidian**：原帖标题区与阅读弹窗均可把楼主首帖保存为 Markdown 笔记；同一帖子重复保存时更新原文件，并支持 Local REST API 静默写入和 Obsidian URI 兜底模式。
 - **OP / ME 标识**：楼主所有楼层标注蓝色 `OP`，本人楼层标注绿色 `ME`。
 - **打开原帖**：头部一键在新标签页打开帖子原始页面。
 - **已读上报**：仅对**滚动进入视口并停留足够时间**的楼层，按真实阅读节奏调用 `topics/timings` 上报，使弹窗阅读也能计入 Connect 进度。
@@ -59,7 +59,7 @@
 | 点击楼层头像 | 弹出用户详情卡片 |
 | 点击详情卡片头像 | 新标签页打开用户主页 |
 | 点击图片或放大控件 | 原图灯箱查看，再次点击/Esc 关闭 |
-| 保存到 Obsidian | 将楼主首帖、元数据和原帖链接保存为新的 Markdown 快照 |
+| 保存到 Obsidian | 将楼主首帖、帖子信息、标签和原帖链接保存为 Markdown 笔记 |
 | Obsidian 设置按钮 | 配置 REST API、URI 模式、Vault 名称和基础目录 |
 | ♥ 按钮 | 点赞 / 取消赞 |
 | ↩ 回复 | 展开回复框，发送后插入楼中楼 |
@@ -69,11 +69,13 @@
 
 ## 保存到 Obsidian
 
-脚本只保存楼主首帖，不抓取评论；每次保存都会创建一份带本地时间戳的新快照，不覆盖旧笔记。默认路径为：
+脚本只保存楼主首帖，不抓取评论。同一站点、同一帖子只对应一个笔记，第一次保存时创建文件，之后再次保存会更新原文件，不产生重复副本。笔记不生成重复的 YAML 属性和正文标题，元数据统一汇总到“帖子信息”，标签显示在其下方。默认路径为：
 
 ```text
-论坛收藏/{LINUX DO 或 IDC Flare}/{分类}/{主题ID}-{标题}-{YYYYMMDD-HHmmss-SSS}.md
+论坛收藏/{LINUX DO 或 IDC Flare}/{分类}/{标题}.md
 ```
+
+脚本会在油猴私有存储中按“站点 + 帖子 ID + 基础目录”记录笔记路径，因此帖子改名后仍会更新原文件；如果不同帖子恰好同名，则自动使用 `{标题}-2.md`、`{标题}-3.md` 避免互相覆盖。此前已生成的时间戳副本不会自动删除。
 
 首次点击“保存到 Obsidian”会打开配置：
 

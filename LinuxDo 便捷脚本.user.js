@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.14
+// @version      1.1.15
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
 // @author       Fashion
@@ -652,6 +652,7 @@
   // Markdown 转换与写入流程移植并改编自 zsq 的 MIT 脚本：
   // https://greasyfork.org/zh-CN/scripts/587200-linux-do-%E5%B8%96%E5%AD%90%E4%BF%9D%E5%AD%98%E5%88%B0-obsidian
   const OBSIDIAN_SETTINGS_KEY = 'ldp-obsidian-settings-v1';
+  const OBSIDIAN_TOPIC_PATHS_KEY = 'ldp-obsidian-topic-paths-v1';
   const OBSIDIAN_DEFAULT_SETTINGS = {
     mode: 'rest',
     apiUrl: 'http://127.0.0.1:27123',
@@ -822,13 +823,34 @@
     }
   }
 
-  async function saveObsidianWithUri(markdown, vaultPath, settings) {
+  async function inspectObsidianRestPath(settings, vaultPath, topicId) {
+    const origin = validateObsidianApiUrl(settings.apiUrl);
+    const apiKey = String(settings.apiKey || '').trim();
+    if (!apiKey) throw new Error('请先填写 Local REST API Key');
+    const encodedPath = vaultPath.split('/').map(encodeURIComponent).join('/');
+    const response = await obsidianGMRequest({
+      method: 'GET',
+      url: `${origin}/vault/${encodedPath}`,
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (response.status === 404) return 'available';
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error('检查 Obsidian 笔记失败：HTTP ' + response.status);
+    }
+    const content = String(response.responseText || '');
+    const escapedTopicId = String(topicId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const isSameTopic = new RegExp(`(?:\\*\\*帖子 ID\\*\\*：|topic_id:\\s*)${escapedTopicId}(?:\\s|$)`).test(content);
+    return isSameTopic ? 'same-topic' : 'occupied';
+  }
+
+  async function saveObsidianWithUri(markdown, vaultPath, settings, overwrite) {
     await getGMMethod('setClipboard')(markdown, 'text');
     const params = new URLSearchParams();
     const vaultName = String(settings.vaultName || '').trim();
     if (vaultName) params.set('vault', vaultName);
     params.set('file', vaultPath);
     params.set('clipboard', 'true');
+    if (overwrite) params.set('overwrite', 'true');
     const link = document.createElement('a');
     link.href = `obsidian://new?${params.toString()}`;
     link.style.display = 'none';
@@ -850,7 +872,7 @@
           <div class="ldp-obsidian-dialog-head">
             <div>
               <h2 id="ldp-obsidian-dialog-title">保存到 Obsidian</h2>
-              <p class="ldp-obsidian-dialog-subtitle">每次保存都会创建一份新的首帖快照</p>
+              <p class="ldp-obsidian-dialog-subtitle">同一帖子再次保存时更新原笔记，不创建重复文件</p>
             </div>
             <button type="button" class="ldp-obsidian-dialog-close" title="关闭" aria-label="关闭设置">×</button>
           </div>
@@ -875,7 +897,7 @@
           </div>
           <label for="ldp-obsidian-folder">基础目录</label>
           <input id="ldp-obsidian-folder" type="text" placeholder="论坛收藏">
-          <p class="ldp-obsidian-dialog-help">实际路径会自动追加站点、分类和带时间戳的文件名。</p>
+          <p class="ldp-obsidian-dialog-help">实际路径会自动追加站点、分类和帖子标题；同一帖子始终复用原路径。</p>
           <div class="ldp-obsidian-dialog-status" aria-live="polite"></div>
           <div class="ldp-obsidian-dialog-actions">
             <button type="button" class="ldp-obsidian-secondary" data-action="cancel">取消</button>
@@ -1105,10 +1127,6 @@
     return markdown;
   }
 
-  function obsidianYamlString(value) {
-    return JSON.stringify(String(value == null ? '' : value));
-  }
-
   function formatObsidianDateTime(value) {
     const date = new Date(value);
     if (!Number.isFinite(date.getTime())) return String(value || '');
@@ -1116,12 +1134,6 @@
       year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
       second: '2-digit', hour12: false,
     }).format(date).replaceAll('/', '-');
-  }
-
-  function formatObsidianSnapshotTime(date) {
-    const pad = (value, size) => String(value).padStart(size || 2, '0');
-    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-` +
-        `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${pad(date.getMilliseconds(), 3)}`;
   }
 
   function sanitizeObsidianPathSegment(value, fallback) {
@@ -1169,14 +1181,51 @@
     return topic;
   }
 
-  function buildObsidianVaultPath(settings, topic, snapshotDate) {
+  function buildObsidianVaultPath(settings, topic, duplicateIndex) {
     const baseSegments = String(settings.baseFolder || OBSIDIAN_DEFAULT_SETTINGS.baseFolder).split('/')
         .map((segment) => sanitizeObsidianPathSegment(segment, '')).filter(Boolean);
     const site = obsidianSiteInfo();
     const category = sanitizeObsidianPathSegment(topic._obsidianCategoryName, '未分类');
     const title = sanitizeObsidianPathSegment(topic.title, '未命名主题');
-    const filename = `${topic.id}-${title}-${formatObsidianSnapshotTime(snapshotDate)}.md`;
+    const suffix = duplicateIndex > 1 ? `-${duplicateIndex}` : '';
+    const filename = `${title}${suffix}.md`;
     return baseSegments.concat(site.directory, category, filename).join('/');
+  }
+
+  async function resolveObsidianVaultTarget(settings, topic) {
+    const stored = await getGMMethod('getValue')(OBSIDIAN_TOPIC_PATHS_KEY, {});
+    const topicPaths = stored && typeof stored === 'object' ? stored : {};
+    const baseFolderKey = String(settings.baseFolder || OBSIDIAN_DEFAULT_SETTINGS.baseFolder).split('/')
+        .map((segment) => sanitizeObsidianPathSegment(segment, '')).filter(Boolean).join('/');
+    const site = obsidianSiteInfo();
+    const key = `${site.source}|${baseFolderKey}|${topic.id}`;
+    if (typeof topicPaths[key] === 'string' && topicPaths[key]) {
+      return { key, path: topicPaths[key], topicPaths, isUpdate: true, shouldRemember: false };
+    }
+
+    const occupiedPaths = new Set(Object.values(topicPaths).filter((value) => typeof value === 'string'));
+    let duplicateIndex = 1;
+    let path = buildObsidianVaultPath(settings, topic, duplicateIndex);
+    while (true) {
+      if (!occupiedPaths.has(path) && settings.mode === 'rest') {
+        const pathState = await inspectObsidianRestPath(settings, path, topic.id);
+        if (pathState === 'same-topic') {
+          return { key, path, topicPaths, isUpdate: true, shouldRemember: true };
+        }
+        if (pathState === 'available') break;
+      } else if (!occupiedPaths.has(path)) {
+        break;
+      }
+      duplicateIndex += 1;
+      path = buildObsidianVaultPath(settings, topic, duplicateIndex);
+    }
+    return { key, path, topicPaths, isUpdate: false, shouldRemember: true };
+  }
+
+  async function rememberObsidianVaultTarget(target) {
+    if (!target.shouldRemember) return;
+    target.topicPaths[target.key] = target.path;
+    await getGMMethod('setValue')(OBSIDIAN_TOPIC_PATHS_KEY, target.topicPaths);
   }
 
   function buildObsidianMarkdown(topic, snapshotDate) {
@@ -1188,32 +1237,23 @@
       : [];
     const tags = Array.from(new Set([site.tag].concat(sourceTags)));
     const author = firstPost.username || firstPost.display_username || 'unknown';
-    const frontmatter = [
-      '---',
-      `title: ${obsidianYamlString(topic.title)}`,
-      `source: ${obsidianYamlString(sourceUrl)}`,
-      `source_site: ${obsidianYamlString(site.source)}`,
-      `topic_id: ${topic.id}`,
-      `category: ${obsidianYamlString(topic._obsidianCategoryName || '未分类')}`,
-      `author: ${obsidianYamlString(author)}`,
-      `created_at: ${obsidianYamlString(firstPost.created_at || topic.created_at)}`,
-      `updated_at: ${obsidianYamlString(firstPost.updated_at || firstPost.created_at)}`,
-      `saved_at: ${obsidianYamlString(snapshotDate.toISOString())}`,
-      'saved_scope: "first_post"',
-      `tags: ${JSON.stringify(tags)}`,
-      '---',
-    ].join('\n');
+    const tagLine = tags.map((tag) => {
+      const normalized = String(tag || '').trim().replace(/^#+/, '').replace(/\s+/g, '-');
+      return normalized ? `#${normalized}` : '';
+    }).filter(Boolean).join(' ');
     const body = cookedHtmlToObsidianMarkdown(firstPost.cooked);
     const information = [
       '> [!info] 帖子信息',
       `> - **原帖链接**：[打开原帖](${sourceUrl})`,
       `> - **站点**：${site.directory}`,
+      `> - **帖子 ID**：${topic.id}`,
       `> - **分类**：${topic._obsidianCategoryName || '未分类'}`,
       `> - **楼主**：@${author}`,
       `> - **发布时间**：${formatObsidianDateTime(firstPost.created_at || topic.created_at)}`,
-      '> - **保存范围**：仅楼主首帖',
+      `> - **更新时间**：${formatObsidianDateTime(firstPost.updated_at || firstPost.created_at)}`,
+      `> - **保存时间**：${formatObsidianDateTime(snapshotDate.toISOString())}`,
     ].join('\n');
-    return [frontmatter, '', `# ${topic.title}`, '', information, '', '## 主帖', '', body, '',
+    return [information, '', `**标签**：${tagLine}`, '', '## 主帖', '', body, '',
       `— [返回原帖](${sourceUrl})`, ''].join('\n');
   }
 
@@ -1233,15 +1273,18 @@
       setObsidianSaveState('转换 Markdown…', true);
       const snapshotDate = new Date();
       const markdown = buildObsidianMarkdown(topic, snapshotDate);
-      const vaultPath = buildObsidianVaultPath(settings, topic, snapshotDate);
+      const vaultTarget = await resolveObsidianVaultTarget(settings, topic);
+      const vaultPath = vaultTarget.path;
       if (settings.mode === 'rest') {
         setObsidianSaveState('写入 Obsidian…', true);
         await saveObsidianWithRest(markdown, vaultPath, settings);
-        showObsidianToast(`已保存 Obsidian 快照：${vaultPath}`, 'success');
+        await rememberObsidianVaultTarget(vaultTarget);
+        showObsidianToast(`${vaultTarget.isUpdate ? '已更新' : '已保存'} Obsidian 笔记：${vaultPath}`, 'success');
       } else {
         setObsidianSaveState('打开 Obsidian…', true);
-        await saveObsidianWithUri(markdown, vaultPath, settings);
-        showObsidianToast(`Markdown 已复制，正在打开 Obsidian：${vaultPath}`, 'success');
+        await saveObsidianWithUri(markdown, vaultPath, settings, vaultTarget.isUpdate);
+        await rememberObsidianVaultTarget(vaultTarget);
+        showObsidianToast(`Markdown 已复制，正在${vaultTarget.isUpdate ? '更新' : '创建'} Obsidian 笔记：${vaultPath}`, 'success');
       }
     } catch (error) {
       showObsidianToast(obsidianErrorMessage(error), 'error');
