@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Cookie 获取器 - 后台配置</title>
+  <style>
+    :root { color-scheme: light; font-family: "Microsoft YaHei", sans-serif; }
+    body { max-width: 760px; margin: 0 auto; padding: 24px; color: #202124; }
+    h1 { margin-top: 0; text-align: center; }
+    h2 { margin-top: 0; font-size: 18px; }
+    .tabs { display: flex; gap: 5px; border-bottom: 1px solid #dadce0; }
+    .tab-button { border: 0; border-radius: 5px 5px 0 0; padding: 10px 16px; cursor: pointer; }
+    .tab-button.active { background: #1a73e8; color: white; }
+    .tab-content { display: none; padding: 20px; border: 1px solid #dadce0; border-top: 0; }
+    .tab-content.active { display: block; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 6px; font-weight: 700; }
+    input[type="text"], textarea, select { width: 100%; box-sizing: border-box; padding: 9px; border: 1px solid #dadce0; border-radius: 4px; }
+    textarea { min-height: 100px; resize: vertical; font-family: Consolas, monospace; }
+    .toggle { display: flex; align-items: center; gap: 8px; }
+    .toggle label { margin: 0; }
+    .help { color: #5f6368; font-size: 13px; line-height: 1.45; }
+    .filter-box { margin-bottom: 18px; padding: 14px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 5px; }
+    .filter-input { display: flex; gap: 8px; }
+    .filter-input input { flex: 1; }
+    .filter-list { min-height: 32px; margin-top: 10px; padding: 5px; border: 1px solid #dadce0; border-radius: 4px; background: white; }
+    .filter-tag { display: inline-flex; align-items: center; gap: 5px; margin: 3px; padding: 4px 7px; border-radius: 4px; background: #e8f0fe; color: #174ea6; font-size: 12px; }
+    .filter-tag button { padding: 0 3px; background: transparent; color: #c5221f; font-size: 16px; }
+    button { border: 0; border-radius: 4px; padding: 9px 15px; background: #1a73e8; color: white; cursor: pointer; }
+    button:hover { filter: brightness(.92); }
+    button.secondary { background: #f1f3f4; color: #202124; }
+    .actions { display: flex; justify-content: center; gap: 12px; margin-top: 20px; }
+    .status, .last-status, .test-result, .notice { margin-top: 15px; padding: 11px; border-radius: 5px; line-height: 1.45; }
+    .status { display: none; text-align: center; }
+    .status.success { display: block; background: #e6f4ea; color: #137333; }
+    .status.error { display: block; background: #fce8e6; color: #c5221f; }
+    .last-status { background: #f8f9fa; color: #5f6368; font-size: 13px; }
+    .test-result { display: none; border: 1px solid #dadce0; background: #f8f9fa; font-size: 13px; }
+    .test-result.visible { display: block; }
+    .test-result pre { overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    .notice { background: #fff3cd; color: #664d03; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Cookie 获取器 - 后台配置</h1>
+
+  <div class="tabs">
+    <button class="tab-button active" data-tab="basic">基本设置</button>
+    <button class="tab-button secondary" data-tab="filter">过滤设置</button>
+  </div>
+
+  <section class="tab-content active" id="basic-tab">
+    <div class="form-group toggle">
+      <input type="checkbox" id="enableBackend">
+      <label for="enableBackend">启用后台传输</label>
+    </div>
+    <p class="help">启用后，所有可访问 Cookie Store 中的 Cookie 变化都会按域同步。</p>
+
+    <div class="form-group">
+      <label for="backendUrl">后台接口地址</label>
+      <input type="text" id="backendUrl" placeholder="https://example.com/api/cookies">
+      <p class="help">仅允许 HTTPS；localhost 和 127.0.0.1 可使用 HTTP。</p>
+    </div>
+
+    <div class="form-group">
+      <label for="requestMethod">请求方法</label>
+      <select id="requestMethod">
+        <option value="POST">POST</option>
+        <option value="PUT">PUT</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label for="customHeaders">自定义请求头（JSON 对象）</label>
+      <textarea id="customHeaders" spellcheck="false"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label for="dataFormat">数据格式</label>
+      <textarea id="dataFormat" spellcheck="false"></textarea>
+      <p class="help">支持 {domain}、{storeId}、{partitionKey}、{event}、{cookies}，占位符可重复使用。模板渲染后必须是合法 JSON。</p>
+    </div>
+  </section>
+
+  <section class="tab-content" id="filter-tab">
+    <div class="filter-box">
+      <h2>域名过滤</h2>
+      <p class="help">只同步匹配的 Cookie 域名；关闭正则时使用不区分大小写的包含匹配。</p>
+      <div class="filter-input">
+        <input type="text" id="urlFilterInput" placeholder="example.com">
+        <button id="addUrlFilter">添加</button>
+      </div>
+      <div class="filter-list" id="urlFilterList"></div>
+      <div class="toggle">
+        <input type="checkbox" id="urlFilterType">
+        <label for="urlFilterType">使用正则表达式</label>
+      </div>
+    </div>
+
+    <div class="filter-box">
+      <h2>Cookie 键过滤</h2>
+      <p class="help">包含模式仅发送列出的键；排除模式忽略列出的键。</p>
+      <div class="filter-input">
+        <input type="text" id="cookieKeyFilterInput" placeholder="sessionid">
+        <button id="addCookieKeyFilter">添加</button>
+      </div>
+      <div class="filter-list" id="cookieKeyFilterList"></div>
+      <div class="toggle">
+        <input type="checkbox" id="cookieFilterType">
+        <label for="cookieFilterType">排除模式</label>
+      </div>
+    </div>
+  </section>
+
+  <div class="actions">
+    <button id="testBtn">测试连接</button>
+    <button id="saveBtn">保存配置</button>
+    <button id="resetBtn" class="secondary">重置</button>
+  </div>
+
+  <div id="status" class="status"></div>
+  <div id="lastTransferStatus" class="last-status">最近传输：暂无记录</div>
+  <div id="testResult" class="test-result"></div>
+
+  <div class="notice">
+    Cookie 是敏感登录凭据。扩展只会向你配置的地址发送数据，但该服务的安全性和数据保存策略由你负责。后台配置保存在本地；Cookie 快照不会写入持久化存储。
+  </div>
+
+  <script type="module" src="config.js"></script>
+</body>
+</html>

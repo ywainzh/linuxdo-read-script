@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "网站Cookie获取器",
+  "version": "1.1.0",
+  "minimum_chrome_version": "132",
+  "description": "导出当前页面 Cookie，并将所有可访问 Cookie Store 的变更同步到自定义后台",
+  "permissions": [
+    "cookies",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "options_page": "config.html"
+}

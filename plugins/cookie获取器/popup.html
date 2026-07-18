@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>网站 Cookie 获取器</title>
+  <style>
+    :root { color-scheme: light; font-family: "Microsoft YaHei", sans-serif; }
+    body { width: 390px; margin: 0; padding: 14px; color: #202124; }
+    h1 { margin: 0 0 10px; font-size: 18px; text-align: center; }
+    h2 { margin: 12px 0 6px; font-size: 14px; }
+    .domain-info { color: #1a73e8; font-size: 13px; font-weight: 600; text-align: center; word-break: break-all; }
+    .status, .transfer-detail { margin-top: 10px; padding: 9px; border-radius: 5px; font-size: 12px; }
+    .status { background: #f1f3f4; }
+    .status.success { background: #e6f4ea; color: #137333; }
+    .status.error { background: #fce8e6; color: #c5221f; }
+    .search-container { display: flex; gap: 6px; margin-top: 10px; }
+    .search-container input { min-width: 0; flex: 1; padding: 7px; border: 1px solid #dadce0; border-radius: 4px; }
+    button { border: 0; border-radius: 4px; padding: 7px 10px; background: #1a73e8; color: white; cursor: pointer; }
+    button:hover { background: #1557b0; }
+    button.secondary { background: #f1f3f4; color: #202124; }
+    .search-container button { flex: none; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    .cookie-container { max-height: 330px; overflow-y: auto; margin-top: 10px; border: 1px solid #dadce0; border-radius: 5px; padding: 8px; }
+    .cookie-list { list-style: none; margin: 0; padding: 0; }
+    .cookie-item { display: flex; gap: 8px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid #eee; }
+    .cookie-item:last-child { border-bottom: 0; }
+    .cookie-info { min-width: 0; flex: 1; word-break: break-all; font-size: 12px; }
+    .cookie-name { font-weight: 700; }
+    .cookie-value-row { display: flex; gap: 4px; align-items: flex-end; margin-top: 2px; }
+    .cookie-value { display: -webkit-box; min-width: 0; flex: 1; overflow: hidden; color: #3c4043; word-break: break-all; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .cookie-value.expanded { display: block; overflow: visible; -webkit-line-clamp: unset; }
+    .value-toggle { flex: none; padding: 0 3px; background: transparent; color: #1a73e8; font-size: 11px; line-height: 1.4; }
+    .value-toggle:hover { background: #e8f0fe; }
+    .cookie-meta { margin-top: 4px; color: #5f6368; font-size: 10px; line-height: 1.45; }
+    .copy-one { flex: none; padding: 4px 7px; font-size: 10px; }
+    mark { background: #fff3cd; }
+    .empty { margin: 8px 0; color: #5f6368; text-align: center; }
+    .backend-row { display: flex; align-items: center; gap: 7px; margin-top: 12px; font-size: 12px; }
+    .indicator { width: 10px; height: 10px; flex: none; border-radius: 50%; background: #9aa0a6; }
+    .indicator.enabled { background: #188038; }
+    .indicator.disabled { background: #d93025; }
+    .backend-row span { flex: 1; }
+    .backend-row button { padding: 5px 8px; }
+    .transfer-detail { margin-top: 6px; background: #f8f9fa; color: #5f6368; line-height: 1.45; word-break: break-word; }
+    .author { margin: 10px 0 0; color: #188038; font-size: 11px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>网站 Cookie 获取器</h1>
+  <div class="domain-info" id="domainInfo">正在读取活动标签页…</div>
+
+  <div class="search-container">
+    <input type="search" id="searchInput" placeholder="搜索 Cookie 名称或值">
+    <button id="searchBtn">搜索</button>
+    <button id="clearSearchBtn" class="secondary">清除</button>
+  </div>
+
+  <div class="status" id="status">正在获取 Cookie…</div>
+  <div class="cookie-container" id="cookieContainer"></div>
+
+  <div class="actions">
+    <button id="refreshBtn">刷新 Cookie</button>
+    <button id="copyBtn">复制所有 Cookie</button>
+  </div>
+
+  <div class="backend-row">
+    <div class="indicator" id="backendIndicator"></div>
+    <span id="backendStatus">后台传输：正在加载…</span>
+    <button id="configBtn" class="secondary">配置</button>
+  </div>
+  <div class="transfer-detail" id="lastTransferStatus">最近传输：暂无记录</div>
+
+  <p class="author">吾爱破解：18382747915</p>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

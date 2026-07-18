@@ -102,6 +102,13 @@
       font-size:13px;}
     .ldp-obsidian-dialog-status[data-type="error"]{color:var(--danger,#b42318);}
     .ldp-obsidian-dialog-status[data-type="success"]{color:#15803d;}
+    .ldp-obsidian-confirm-icon{display:grid;width:42px;height:42px;margin-bottom:14px;
+      place-items:center;border-radius:11px;color:#7c3aed;background:rgba(124,58,237,.11);
+      font-size:24px;font-weight:700;}
+    .ldp-obsidian-confirm-copy{margin:8px 0 0;color:var(--primary-medium,#667085);}
+    .ldp-obsidian-confirm-path{display:block;margin-top:14px;padding:9px 10px;overflow-wrap:anywhere;
+      border:1px solid var(--primary-low,#e5e7eb);border-radius:7px;
+      color:var(--primary,#1f2937);background:var(--primary-very-low,#f7f7f8);font-size:12px;}
     .ldp-obsidian-dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;}
     .ldp-obsidian-dialog-actions button,.ldp-obsidian-test{border:0;border-radius:7px;
       padding:8px 12px;cursor:pointer;font:inherit;font-size:13px;font-weight:600;line-height:1.2;}
@@ -989,6 +996,55 @@
     });
   }
 
+  function confirmObsidianUpdate(vaultPath) {
+    if (CURRENT_OBSIDIAN_DIALOG_CLOSE) CURRENT_OBSIDIAN_DIALOG_CLOSE(false);
+    const returnFocus = document.activeElement;
+    return new Promise((resolve) => {
+      let closed = false;
+      const overlay = document.createElement('div');
+      overlay.className = 'ldp-obsidian-dialog-overlay';
+      overlay.innerHTML = `
+        <div class="ldp-obsidian-dialog ldp-obsidian-confirm" role="dialog" aria-modal="true"
+          aria-labelledby="ldp-obsidian-confirm-title">
+          <div class="ldp-obsidian-confirm-icon" aria-hidden="true">↻</div>
+          <h2 id="ldp-obsidian-confirm-title">检测到已保存的帖子</h2>
+          <p class="ldp-obsidian-confirm-copy">此帖子已经保存到 Obsidian。继续后会更新原笔记，不会创建重复文件。</p>
+          <code class="ldp-obsidian-confirm-path"></code>
+          <div class="ldp-obsidian-dialog-actions">
+            <button type="button" class="ldp-obsidian-secondary" data-action="cancel">取消</button>
+            <button type="button" class="ldp-obsidian-primary" data-action="update">更新原笔记</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('.ldp-obsidian-confirm-path').textContent = vaultPath;
+      const updateButton = overlay.querySelector('[data-action="update"]');
+
+      function close(result) {
+        if (closed) return;
+        closed = true;
+        overlay.remove();
+        document.removeEventListener('keydown', onKeyDown, true);
+        if (CURRENT_OBSIDIAN_DIALOG_CLOSE === close) CURRENT_OBSIDIAN_DIALOG_CLOSE = null;
+        if (returnFocus && returnFocus.isConnected && typeof returnFocus.focus === 'function') {
+          returnFocus.focus({ preventScroll: true });
+        }
+        resolve(result);
+      }
+      function onKeyDown(event) {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        close(false);
+      }
+      CURRENT_OBSIDIAN_DIALOG_CLOSE = close;
+      overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => close(false));
+      updateButton.addEventListener('click', () => close(true));
+      overlay.addEventListener('click', (event) => { if (event.target === overlay) close(false); });
+      document.addEventListener('keydown', onKeyDown, true);
+      updateButton.focus({ preventScroll: true });
+    });
+  }
+
   function makeObsidianAbsoluteUrl(value) {
     if (!value || /^(?:#|data:|mailto:|obsidian:)/i.test(value)) return value;
     try { return new URL(value, BASE + '/').href; }
@@ -1253,7 +1309,7 @@
       `> - **更新时间**：${formatObsidianDateTime(firstPost.updated_at || firstPost.created_at)}`,
       `> - **保存时间**：${formatObsidianDateTime(snapshotDate.toISOString())}`,
     ].join('\n');
-    return [information, '', `**标签**：${tagLine}`, '', '## 主帖', '', body, '',
+    return [information, '', `**标签**： ${tagLine}`, '', '## 主帖', '', body, '',
       `— [返回原帖](${sourceUrl})`, ''].join('\n');
   }
 
@@ -1275,6 +1331,14 @@
       const markdown = buildObsidianMarkdown(topic, snapshotDate);
       const vaultTarget = await resolveObsidianVaultTarget(settings, topic);
       const vaultPath = vaultTarget.path;
+      if (vaultTarget.isUpdate) {
+        setObsidianSaveState('等待确认…', true);
+        const shouldUpdate = await confirmObsidianUpdate(vaultPath);
+        if (!shouldUpdate) {
+          showObsidianToast('已取消更新 Obsidian 笔记', 'info');
+          return;
+        }
+      }
       if (settings.mode === 'rest') {
         setObsidianSaveState('写入 Obsidian…', true);
         await saveObsidianWithRest(markdown, vaultPath, settings);
