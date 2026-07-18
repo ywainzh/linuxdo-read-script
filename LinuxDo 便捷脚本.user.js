@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.15
+// @version      1.1.16
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
 // @author       Fashion
@@ -659,7 +659,7 @@
   // Markdown 转换与写入流程移植并改编自 zsq 的 MIT 脚本：
   // https://greasyfork.org/zh-CN/scripts/587200-linux-do-%E5%B8%96%E5%AD%90%E4%BF%9D%E5%AD%98%E5%88%B0-obsidian
   const OBSIDIAN_SETTINGS_KEY = 'ldp-obsidian-settings-v1';
-  const OBSIDIAN_TOPIC_PATHS_KEY = 'ldp-obsidian-topic-paths-v1';
+  const OBSIDIAN_TOPIC_PATHS_KEY = 'ldp-obsidian-topic-paths-v2';
   const OBSIDIAN_DEFAULT_SETTINGS = {
     mode: 'rest',
     apiUrl: 'http://127.0.0.1:27123',
@@ -904,7 +904,7 @@
           </div>
           <label for="ldp-obsidian-folder">基础目录</label>
           <input id="ldp-obsidian-folder" type="text" placeholder="论坛收藏">
-          <p class="ldp-obsidian-dialog-help">实际路径会自动追加站点、分类和帖子标题；同一帖子始终复用原路径。</p>
+          <p class="ldp-obsidian-dialog-help">实际路径会自动追加站点和帖子标题；同一帖子始终复用原路径。</p>
           <div class="ldp-obsidian-dialog-status" aria-live="polite"></div>
           <div class="ldp-obsidian-dialog-actions">
             <button type="button" class="ldp-obsidian-secondary" data-action="cancel">取消</button>
@@ -1241,11 +1241,10 @@
     const baseSegments = String(settings.baseFolder || OBSIDIAN_DEFAULT_SETTINGS.baseFolder).split('/')
         .map((segment) => sanitizeObsidianPathSegment(segment, '')).filter(Boolean);
     const site = obsidianSiteInfo();
-    const category = sanitizeObsidianPathSegment(topic._obsidianCategoryName, '未分类');
     const title = sanitizeObsidianPathSegment(topic.title, '未命名主题');
     const suffix = duplicateIndex > 1 ? `-${duplicateIndex}` : '';
     const filename = `${title}${suffix}.md`;
-    return baseSegments.concat(site.directory, category, filename).join('/');
+    return baseSegments.concat(site.directory, filename).join('/');
   }
 
   async function resolveObsidianVaultTarget(settings, topic) {

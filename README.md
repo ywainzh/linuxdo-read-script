@@ -2,7 +2,7 @@
 
 > 在 LINUX DO 与 IDC Flare 列表页点击标题即可弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读进度与 Obsidian 首帖快照——无需离开列表页，也无需反复返回。
 
-![version](https://img.shields.io/badge/version-1.1.15-blue)
+![version](https://img.shields.io/badge/version-1.1.16-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-red)](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)
@@ -72,10 +72,10 @@
 脚本只保存楼主首帖，不抓取评论。同一站点、同一帖子只对应一个笔记，第一次保存时创建文件；再次保存会先提示“检测到已保存的帖子”，确认后才更新原文件，不产生重复副本。笔记不生成重复的 YAML 属性和正文标题，元数据统一汇总到“帖子信息”，标签显示在其下方。默认路径为：
 
 ```text
-论坛收藏/{LINUX DO 或 IDC Flare}/{分类}/{标题}.md
+论坛收藏/{LINUX DO 或 IDC Flare}/{标题}.md
 ```
 
-脚本会在油猴私有存储中按“站点 + 帖子 ID + 基础目录”记录笔记路径，因此帖子改名后仍会更新原文件；如果不同帖子恰好同名，则自动使用 `{标题}-2.md`、`{标题}-3.md` 避免互相覆盖。此前已生成的时间戳副本不会自动删除。
+脚本只按站点分目录，不再为帖子分类创建二级目录。它会在油猴私有存储中按“站点 + 帖子 ID + 基础目录”记录笔记路径，因此帖子改名后仍会更新原文件；如果不同帖子恰好同名，则自动使用 `{标题}-2.md`、`{标题}-3.md` 避免互相覆盖。此前已生成的分类目录和时间戳副本不会自动移动或删除。
 
 首次点击“保存到 Obsidian”会打开配置：
 
