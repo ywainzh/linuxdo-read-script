@@ -1,0 +1,163 @@
+#yuque-obsidian-actions,
+.yo-modal-backdrop {
+  --yo-ink: #292525;
+  --yo-muted: #667085;
+  --yo-paper: #ffffff;
+  --yo-line: #d7dce2;
+  --yo-accent: #6d4aff;
+  --yo-accent-dark: #5636df;
+  --yo-export: #159a6a;
+  --yo-export-dark: #0f7e56;
+  font: 500 13px/1.2 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+#yuque-obsidian-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+#yuque-obsidian-actions.yo-native-book {
+  height: 32px;
+  margin-left: 12px;
+}
+#yuque-obsidian-actions.yo-native-doc {
+  height: 32px;
+  margin-left: 8px;
+}
+#yuque-obsidian-actions.yo-floating-mobile {
+  position: fixed;
+  z-index: 2147483000;
+  top: 16px;
+  right: 40px;
+  height: 32px;
+}
+.yo-button {
+  border: 1px solid var(--yo-line);
+  border-radius: 7px;
+  padding: 7px 11px;
+  color: var(--yo-ink);
+  background: transparent;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+#yuque-obsidian-actions .yo-button {
+  box-sizing: border-box;
+  height: 32px;
+  padding: 4px 14px;
+  border-color: #e7e9e8;
+  border-radius: 6px;
+  color: #262626;
+  background: #fff;
+  font-family: "Chinese Quote", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 16px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+#yuque-obsidian-actions.yo-native-book .yo-button { font-weight: 700; }
+#yuque-obsidian-actions.yo-native-doc .yo-button { font-weight: 500; }
+#yuque-obsidian-actions .yo-button:hover {
+  border-color: #d8dcda;
+  color: #262626;
+  background: #f5f7f6;
+}
+#yuque-obsidian-actions .yo-button:active { background: #eef1ef; }
+#yuque-obsidian-actions .import-action {
+  border-color: #d9d2f5;
+  color: #6251bd;
+  background: #f8f6ff;
+}
+#yuque-obsidian-actions .import-action:hover {
+  border-color: #bcb0eb;
+  color: #4f3da8;
+  background: #f1edff;
+}
+#yuque-obsidian-actions .export-action {
+  border-color: #bde3d4;
+  color: #13795b;
+  background: #f2fbf7;
+}
+#yuque-obsidian-actions .export-action:hover {
+  border-color: #8fcdb6;
+  color: #0d6249;
+  background: #e8f7f0;
+}
+#yuque-obsidian-actions .yo-button:focus-visible {
+  outline: 2px solid rgba(0, 184, 84, .28);
+  outline-offset: 2px;
+}
+#yuque-obsidian-actions .import-action:focus-visible { outline-color: rgba(98, 81, 189, .3); }
+#yuque-obsidian-actions.yo-floating-mobile .yo-button {
+  min-width: 48px;
+  padding-inline: 9px;
+  box-shadow: 0 2px 8px rgba(26, 37, 32, .12);
+}
+.yo-button:hover { border-color: var(--yo-accent); color: var(--yo-accent-dark); background: #f2efff; }
+.yo-button:focus-visible, .yo-modal button:focus-visible, .yo-modal input:focus-visible { outline: 2px solid #8c75ff; outline-offset: 2px; }
+.yo-button.primary { color: #fff; border-color: var(--yo-accent); background: var(--yo-accent); }
+.yo-button.primary:hover { color: #fff; background: var(--yo-accent-dark); }
+.yo-button[disabled] { cursor: wait; opacity: .55; }
+.yo-modal-backdrop {
+  position: fixed; inset: 0; z-index: 2147483001; display: grid; place-items: center;
+  padding: 22px; background: rgba(18, 24, 38, .68); isolation: isolate;
+}
+.yo-modal {
+  width: min(680px, 100%); max-height: min(720px, calc(100vh - 44px)); overflow: auto;
+  padding: 26px; border: 1px solid var(--yo-line); border-radius: 8px;
+  color: var(--yo-ink); background: var(--yo-paper); opacity: 1; mix-blend-mode: normal;
+  box-shadow: 0 24px 72px rgba(12, 18, 30, .38);
+  font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+.yo-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.yo-modal h2 { margin: 0; font: 680 22px/1.2 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; letter-spacing: 0; }
+.yo-modal p { margin: 6px 0 0; color: var(--yo-muted); }
+.yo-close { border: 0; padding: 4px 8px; color: var(--yo-muted); background: transparent; font-size: 21px; cursor: pointer; }
+.yo-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--yo-line); margin-bottom: 18px; }
+.yo-tab { border: 0; border-bottom: 2px solid transparent; padding: 9px 12px; color: var(--yo-muted); background: transparent; cursor: pointer; }
+.yo-tab.active { border-bottom-color: var(--yo-accent); color: var(--yo-accent-dark); font-weight: 650; }
+.yo-panel { display: grid; gap: 13px; }
+.yo-panel[hidden] { display: none; }
+.yo-field { display: grid; gap: 6px; }
+.yo-field label { font-weight: 650; }
+.yo-field input, .yo-field select { min-height: 36px; box-sizing: border-box; border: 1px solid var(--yo-line); border-radius: 7px; padding: 7px 10px; color: inherit; background: #fff; }
+.yo-note-list { display: grid; gap: 5px; max-height: 260px; overflow: auto; padding: 8px; border: 1px solid var(--yo-line); border-radius: 8px; }
+.yo-note { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 6px; cursor: pointer; }
+.yo-note:hover { background: #f4f2ff; }
+.yo-note small { display: block; color: var(--yo-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yo-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 5px 0 10px; }
+.yo-stat { padding: 10px; border: 1px solid var(--yo-line); border-radius: 8px; background: #f8f9fb; }
+.yo-stat strong { display: block; font-size: 20px; }
+.yo-stat span { color: var(--yo-muted); font-size: 12px; }
+.yo-result { white-space: pre-wrap; color: var(--yo-muted); }
+.yo-import-progress { min-height: 20px; color: var(--yo-muted); font-size: 12px; }
+.yo-import-progress.error { color: #a13830; }
+.yo-operation { cursor: default; overflow-wrap: anywhere; }
+.yo-operation.create::before { content: '＋'; color: #237552; font-weight: 700; }
+.yo-operation.overwrite::before { content: '↻'; color: #8b5c16; font-weight: 700; }
+.yo-operation.ambiguous::before, .yo-operation.failed::before { content: '!'; color: #a13830; font-weight: 700; }
+.yo-operation.success::before { content: '✓'; color: #237552; font-weight: 700; }
+.yo-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 5px; }
+.yo-toast {
+  position: fixed; z-index: 2147483002; right: 20px; bottom: 20px; max-width: min(420px, calc(100vw - 40px));
+  padding: 11px 14px; border-radius: 8px; color: #fff; background: #36302e; box-shadow: 0 10px 32px rgba(0, 0, 0, .22);
+  font: 500 13px/1.45 ui-sans-serif, system-ui, sans-serif;
+}
+.yo-toast.success { background: #237552; }
+.yo-toast.warning { background: #9a5a13; }
+.yo-toast.error { background: #a13830; }
+@media (prefers-color-scheme: dark) {
+  #yuque-obsidian-actions, .yo-modal-backdrop { --yo-ink: #f2f4f7; --yo-muted: #aeb7c4; --yo-paper: #20242b; --yo-line: #49515d; }
+  #yuque-obsidian-actions .yo-button { border-color: #49515d; color: #f2f4f7; background: #20242b; }
+  #yuque-obsidian-actions .yo-button:hover { border-color: #5e6875; color: #fff; background: #2b3038; }
+  #yuque-obsidian-actions .import-action { border-color: #665a91; color: #c7bcf7; background: #29253a; }
+  #yuque-obsidian-actions .import-action:hover { border-color: #8173b5; color: #ddd6ff; background: #342e4a; }
+  #yuque-obsidian-actions .export-action { border-color: #356f5c; color: #8ed5b9; background: #1d302a; }
+  #yuque-obsidian-actions .export-action:hover { border-color: #478b73; color: #b1ead4; background: #244039; }
+  .yo-field input, .yo-field select { background: #171a1f; }
+  .yo-note:hover { background: #302a4a; }
+  .yo-stat { background: #292e36; }
+}
+@media (max-width: 640px) {
+  .yo-modal-backdrop { padding: 10px; }
+  .yo-modal { padding: 18px; }
+  .yo-summary { grid-template-columns: repeat(2, 1fr); }
+}

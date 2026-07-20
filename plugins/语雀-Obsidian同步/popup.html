@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>语雀 Obsidian 导入导出</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div class="mark" aria-hidden="true">羽</div>
+      <div>
+        <h1>语雀 · Obsidian</h1>
+        <p>本机连接</p>
+      </div>
+      <span class="status-dot" title="连接状态"></span>
+    </header>
+    <form id="settingsForm">
+      <section>
+        <label for="apiUrl">Local REST API</label>
+        <input id="apiUrl" type="url" autocomplete="off" required placeholder="http://127.0.0.1:27123">
+      </section>
+      <section>
+        <label for="apiKey">API Key</label>
+        <div class="secret-row">
+          <input id="apiKey" type="password" autocomplete="off" required>
+          <button id="toggleKey" class="icon-button" type="button" title="显示或隐藏 API Key" aria-label="显示或隐藏 API Key">◉</button>
+        </div>
+      </section>
+      <section>
+        <label for="rootFolder">知识库根目录</label>
+        <input id="rootFolder" type="text" autocomplete="off" placeholder="留空使用 Vault 根目录">
+      </section>
+      <div id="result" role="status" aria-live="polite"></div>
+      <footer>
+        <button id="testButton" type="button" class="secondary">测试连接</button>
+        <button type="submit" class="primary">保存设置</button>
+      </footer>
+    </form>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
