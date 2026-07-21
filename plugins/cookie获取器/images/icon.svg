@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="网站 Cookie 获取器">
+  <defs>
+    <linearGradient id="cookie" x1="25" y1="20" x2="96" y2="108" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFE28A"/>
+      <stop offset="0.48" stop-color="#F7BC48"/>
+      <stop offset="1" stop-color="#D98A24"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="32" y1="27" x2="92" y2="104" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF1B1"/>
+      <stop offset="1" stop-color="#B86B19"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#6E431D" flood-opacity="0.28"/>
+    </filter>
+    <mask id="cookieShape">
+      <rect width="128" height="128" fill="#000"/>
+      <circle cx="61" cy="64" r="48" fill="#fff"/>
+      <circle cx="98" cy="28" r="12" fill="#000"/>
+      <circle cx="108" cy="43" r="11" fill="#000"/>
+      <circle cx="110" cy="59" r="9" fill="#000"/>
+    </mask>
+  </defs>
+
+  <g filter="url(#shadow)" mask="url(#cookieShape)">
+    <circle cx="61" cy="64" r="48" fill="url(#cookie)"/>
+    <path d="M28 40c18-18 43-23 64-11-15-2-29 3-40 14-16 16-21 39-13 59-20-12-27-42-11-62Z" fill="#FFF3BE" opacity="0.48"/>
+    <circle cx="61" cy="64" r="45.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  </g>
+
+  <g fill="#713B20">
+    <circle cx="44" cy="43" r="6"/>
+    <circle cx="70" cy="39" r="5.2"/>
+    <circle cx="31" cy="64" r="4.5"/>
+    <circle cx="58" cy="62" r="6.4"/>
+    <circle cx="82" cy="72" r="5.3"/>
+    <circle cx="43" cy="86" r="5.1"/>
+    <circle cx="68" cy="95" r="4.2"/>
+  </g>
+
+  <g fill="#A95B23" opacity="0.52">
+    <circle cx="31" cy="48" r="2.5"/>
+    <circle cx="76" cy="53" r="2.6"/>
+    <circle cx="53" cy="79" r="2.3"/>
+    <circle cx="86" cy="88" r="2.4"/>
+  </g>
+</svg>
