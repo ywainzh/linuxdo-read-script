@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.16
+// @version      1.1.17
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
 // @author       Fashion
@@ -22,6 +22,7 @@
 
   const BASE = location.origin;
   const PAGE_SIZE = 20;
+  const MAX_RENDERED_POSTS = 80;
   const READ_THRESHOLD = 1500;
   const FLUSH_INTERVAL = 5000;
   let ME_USERNAME = null;
@@ -159,7 +160,7 @@
       transform:translate(-50%,-50%) translateY(0);will-change:transform;
       border-radius:50%;background:var(--tertiary,#08c);
       box-shadow:0 0 0 4px rgba(8,132,255,.14);}
-    .ldp-tl-loading .ldp-tl-bottom-date{opacity:.6;pointer-events:none;}
+    .ldp-tl-loading .ldp-tl-date,.ldp-tl-loading .ldp-tl-track{opacity:.6;cursor:progress;}
     .ldp-tl-date:focus-visible,.ldp-tl-track:focus-visible{
       outline:2px solid var(--tertiary,#08c);outline-offset:2px;}
     @media (max-width: 760px){
@@ -2075,6 +2076,7 @@
       getReadWaterline() { return readWaterline; },
       setReadWaterline(pn) { readWaterline = Math.max(1, Number(pn) || 0); },
       observe(node) { if (node) io.observe(node); },
+      unobserve(node) { if (node) { io.unobserve(node); visible.delete(+node.dataset.postNumber); } },
       start() {
         lastTick = Date.now();
         tickTimer = setInterval(tick, 1000);
@@ -2093,6 +2095,7 @@
   /* ============ 5. 加载器 ============ */
   function createLoader(topicId, signal) {
     let stream = [];
+    let streamIndex = new Map();
     const cache = new Map();
     let topic = null;
     let upCursor = 0;
@@ -2100,11 +2103,13 @@
     let topReached = false;
     let bottomReached = false;
 
-    async function fetchSlice(ids) {
+    async function fetchSlice(ids, requestSignal) {
       const missing = ids.filter((id) => !cache.has(id));
       if (!missing.length) return;
       const qs = missing.map((id) => `post_ids[]=${id}`).join('&');
-      const part = await fetchJSON(`${BASE}/t/${topicId}/posts.json?${qs}`, { signal });
+      const part = await fetchJSON(`${BASE}/t/${topicId}/posts.json?${qs}`, {
+        signal: requestSignal || signal,
+      });
       ((part.post_stream && part.post_stream.posts) || []).forEach((p) => cache.set(p.id, p));
     }
 
@@ -2130,6 +2135,7 @@
         const post = cache.get(id);
         return !(post && post.post_number === 1);
       });
+      streamIndex = new Map(stream.map((id, index) => [String(id), index]));
       const op = (topic.details && topic.details.created_by && topic.details.created_by.username)
           || (initialPosts.find((p) => p.post_number === 1) || {}).username
           || null;
@@ -2146,31 +2152,47 @@
           || null;
     }
 
-    async function loadInitial(targetPostNumber) {
+    function windowBounds(targetIndex) {
+      if (!stream.length) return { start: 0, end: 0, targetIndex: -1 };
+      const safeIndex = Math.max(0, Math.min(stream.length - 1, Number(targetIndex) || 0));
+      return {
+        start: Math.max(0, safeIndex - SLICE_RADIUS),
+        end: Math.min(stream.length, safeIndex + SLICE_RADIUS + 1),
+        targetIndex: safeIndex,
+      };
+    }
+
+    async function prepareWindowByIndex(targetIndex, requestSignal) {
+      const bounds = windowBounds(targetIndex);
+      const ids = stream.slice(bounds.start, bounds.end);
+      await fetchSlice(ids, requestSignal);
+      const target = bounds.targetIndex >= 0 ? cache.get(stream[bounds.targetIndex]) : null;
+      return Object.assign(bounds, {
+        posts: ids.map((id) => cache.get(id)).filter(Boolean),
+        targetPostNumber: target ? target.post_number : 1,
+      });
+    }
+
+    async function prepareWindowByPostNumber(targetPostNumber, requestSignal) {
       if (!targetPostNumber || targetPostNumber <= 1 || !stream.length) {
-        upCursor = 0;
-        downCursor = Math.min(PAGE_SIZE, stream.length);
-        topReached = true;
-        bottomReached = downCursor >= stream.length;
-        const ids = stream.slice(0, downCursor);
-        await fetchSlice(ids);
-        return {
-          posts: ids.map((id) => cache.get(id)).filter(Boolean),
-          targetPostNumber: 1,
-        };
+        const result = await prepareWindowByIndex(0, requestSignal);
+        result.targetPostNumber = 1;
+        return result;
       }
 
       let safeIdx = null;
       let resolvedTarget = Number(targetPostNumber);
       try {
-        const anchor = await fetchJSON(`${BASE}/t/${topicId}.json?post_number=${resolvedTarget}`, { signal });
+        const anchor = await fetchJSON(`${BASE}/t/${topicId}.json?post_number=${resolvedTarget}`, {
+          signal: requestSignal || signal,
+        });
         const anchorPosts = (anchor.post_stream && anchor.post_stream.posts) || [];
         anchorPosts.forEach((p) => cache.set(p.id, p));
         const nearest = nearestPost(anchorPosts, resolvedTarget);
         if (nearest) {
           resolvedTarget = nearest.post_number;
-          const idx = stream.indexOf(nearest.id);
-          if (idx >= 0) safeIdx = idx;
+          const idx = streamIndex.get(String(nearest.id));
+          if (idx !== undefined) safeIdx = idx;
         }
       } catch (err) {
         if (err && err.name === 'AbortError') throw err;
@@ -2180,50 +2202,73 @@
         safeIdx = Math.min(Math.max(0, resolvedTarget - 2), Math.max(0, stream.length - 1));
       }
 
-      const start = Math.max(0, safeIdx - SLICE_RADIUS);
-      const end = Math.min(stream.length, safeIdx + SLICE_RADIUS + 1);
-      upCursor = start;
-      downCursor = end;
-      topReached = start === 0;
-      bottomReached = end >= stream.length;
-      const ids = stream.slice(start, end);
-      await fetchSlice(ids);
-      const posts = ids.map((id) => cache.get(id)).filter(Boolean);
-      const nearest = nearestPost(posts, resolvedTarget);
-      return {
-        posts,
-        targetPostNumber: nearest ? nearest.post_number : resolvedTarget,
-      };
+      const result = await prepareWindowByIndex(safeIdx, requestSignal);
+      const nearest = nearestPost(result.posts, resolvedTarget);
+      result.targetPostNumber = nearest ? nearest.post_number : resolvedTarget;
+      return result;
     }
 
-    async function loadDown() {
+    async function prepareDown(requestSignal) {
       if (bottomReached) return { posts: [], done: true };
+      const start = downCursor;
       const end = Math.min(stream.length, downCursor + PAGE_SIZE);
-      const ids = stream.slice(downCursor, end);
-      await fetchSlice(ids);
-      downCursor = end;
-      bottomReached = downCursor >= stream.length;
+      const ids = stream.slice(start, end);
+      await fetchSlice(ids, requestSignal);
       return {
         posts: ids.map((id) => cache.get(id)).filter(Boolean),
-        done: bottomReached,
+        start,
+        end,
+        done: end >= stream.length,
       };
     }
 
-    async function loadUp() {
+    async function prepareUp(requestSignal) {
       if (topReached) return { posts: [], done: true };
       const start = Math.max(0, upCursor - PAGE_SIZE);
       const ids = stream.slice(start, upCursor);
-      await fetchSlice(ids);
-      upCursor = start;
-      topReached = upCursor === 0;
+      await fetchSlice(ids, requestSignal);
       return {
         posts: ids.map((id) => cache.get(id)).filter(Boolean),
-        done: topReached,
+        start,
+        end: upCursor,
+        done: start === 0,
       };
     }
 
+    function activateWindow(result) {
+      upCursor = result.start || 0;
+      downCursor = result.end || 0;
+      topReached = upCursor === 0;
+      bottomReached = downCursor >= stream.length;
+    }
+
+    function activateDown(result) {
+      downCursor = result.end;
+      bottomReached = !!result.done;
+    }
+
+    function activateUp(result) {
+      upCursor = result.start;
+      topReached = !!result.done;
+    }
+
+    function activateRange(start, end) {
+      upCursor = Math.max(0, Number(start) || 0);
+      downCursor = Math.max(upCursor, Math.min(stream.length, Number(end) || 0));
+      topReached = upCursor === 0;
+      bottomReached = downCursor >= stream.length;
+    }
+
     return {
-      init, loadInitial, loadDown, loadUp,
+      init, prepareWindowByIndex, prepareWindowByPostNumber, prepareDown, prepareUp,
+      activateWindow, activateDown, activateUp, activateRange,
+      get streamLength() { return stream.length; },
+      getStreamId(index) { return stream[index]; },
+      getStreamIndex(postId) {
+        const index = streamIndex.get(String(postId));
+        return index === undefined ? -1 : index;
+      },
+      getCachedByIndex(index) { return cache.get(stream[index]) || null; },
       get topic() { return topic; },
       get topReached() { return topReached; },
       get bottomReached() { return bottomReached; },
@@ -2287,6 +2332,78 @@
     return posts.length;
   }
 
+  function reflowRenderedPosts(ctx) {
+    const nodes = Array.from(ctx.nodeMap.values())
+      .filter((node) => node && node.isConnected)
+      .sort((a, b) => (+a.dataset.postNumber || 0) - (+b.dataset.postNumber || 0));
+    const rootFragment = document.createDocumentFragment();
+    nodes.forEach((node) => {
+      const parentNumber = +node.dataset.replyToPostNumber || 0;
+      const parent = parentNumber > 1 ? ctx.nodeMap.get(parentNumber) : null;
+      if (parent && parent.isConnected) {
+        const children = parent.querySelector(':scope > .ldp-children');
+        if (children) children.appendChild(node);
+      } else {
+        rootFragment.appendChild(node);
+      }
+    });
+    ctx.commentsEl.appendChild(rootFragment);
+  }
+
+  function cleanupPostNode(node, ctx) {
+    if (!node) return;
+    const nodes = [node, ...node.querySelectorAll('.ldp-post[data-post-number]')];
+    nodes.forEach((item) => {
+      ctx.tracker.unobserve(item);
+      if (ctx.repliesIO && ctx.repliesIO.clearNode) ctx.repliesIO.clearNode(item);
+      ctx.subReplyState.delete(+item.dataset.postNumber);
+    });
+    node.remove();
+  }
+
+  function clearCommentsWindow(ctx) {
+    Array.from(ctx.commentsEl.querySelectorAll('.ldp-post[data-post-number]'))
+      .forEach((node) => {
+        ctx.tracker.unobserve(node);
+        if (ctx.repliesIO && ctx.repliesIO.clearNode) ctx.repliesIO.clearNode(node);
+      });
+    ctx.nodeMap.clear();
+    ctx.pending = [];
+    ctx.subReplyState.clear();
+    ctx.commentsEl.innerHTML = '<div class="ldp-comments-empty">暂无评论</div>';
+    ctx.emptyEl = ctx.commentsEl.querySelector('.ldp-comments-empty');
+    updateCommentsHeader(ctx);
+  }
+
+  function trimRenderedRange(ctx, loader, keepStart, keepEnd) {
+    const removed = [];
+    ctx.nodeMap.forEach((node, postNumber) => {
+      const index = loader.getStreamIndex(node.dataset.postId);
+      if (index >= keepStart && index < keepEnd) return;
+      ctx.nodeMap.delete(postNumber);
+      removed.push(node);
+    });
+    // 先把仍需保留的嵌套回复移出将删除的父节点，再清理旧节点。
+    reflowRenderedPosts(ctx);
+    removed.forEach((node) => cleanupPostNode(node, ctx));
+    ctx.pending = ctx.pending.filter((item) => ctx.nodeMap.has(item.num));
+    loader.activateRange(keepStart, keepEnd);
+  }
+
+  function captureScrollAnchor(scrollRoot) {
+    const rootRect = scrollRoot.getBoundingClientRect();
+    const posts = Array.from(scrollRoot.querySelectorAll('.ldp-post[data-post-number]'));
+    const node = posts.find((post) => post.getBoundingClientRect().bottom > rootRect.top + 1);
+    return node ? { node, offset: node.getBoundingClientRect().top - rootRect.top } : null;
+  }
+
+  async function restoreScrollAnchor(scrollRoot, anchor) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    if (!anchor || !anchor.node.isConnected) return;
+    const rootTop = scrollRoot.getBoundingClientRect().top;
+    scrollRoot.scrollTop += anchor.node.getBoundingClientRect().top - rootTop - anchor.offset;
+  }
+
   /* ============ 7. 渲染单条 ============ */
   function renderPost(p, isReply, ctx) {
     const avatar = resolveAvatar(p.avatar_template, 48);
@@ -2311,6 +2428,8 @@
     node.dataset.postId = p.id;
     node.dataset.postNumber = p.post_number;
     node.dataset.createdAt = p.created_at || '';
+    node.dataset.replyToPostNumber = p.reply_to_post_number || 0;
+    node.dataset.windowEpoch = String(ctx.windowEpoch || 0);
     node.innerHTML = `
       <div class="ldp-post-head">
         ${avatar ? `<button type="button" class="ldp-avatar-btn" title="查看 ${escAttr(p.username)} 的个人详情" aria-label="查看 ${escAttr(p.username)} 的个人详情" data-username="${escAttr(p.username)}"><img class="ldp-avatar" src="${escAttr(avatar)}" alt="" loading="lazy" decoding="async"></button>` : ''}
@@ -2691,24 +2810,33 @@
     const fetched = new Set();
     const hoverTimers = new Map();
 
-    return new IntersectionObserver((entries) => {
+    const observer = new IntersectionObserver((entries) => {
       entries.forEach((en) => {
         const postId = en.target.dataset.postId;
         const postNumber = +en.target.dataset.postNumber;
         if (!postId) return;
 
         if (en.isIntersecting) {
+          const cachedReplies = ctx.subReplyCache.get(postId);
+          if (cachedReplies && !ctx.subReplyState.has(postNumber)) {
+            ctx.subReplyState.set(postNumber, { all: cachedReplies, renderedCount: 0 });
+            renderSubReplyBatch(postNumber, ctx);
+            return;
+          }
           if (fetched.has(postId) || hoverTimers.has(postId)) return;
           // 停顿检测：楼层需在视口停留 REPLIES_HOVER_DELAY 才真正发起请求，快速划过则不触发
           const timer = setTimeout(async () => {
             hoverTimers.delete(postId);
+            if (!en.target.isConnected || ctx.windowEpoch !== Number(en.target.dataset.windowEpoch)) return;
             fetched.add(postId);
             const loadingEl = en.target.querySelector(':scope > .ldp-sub-loading');
             if (loadingEl) loadingEl.style.display = 'block';
             try {
               const replies = await fetchJSON(`${BASE}/posts/${postId}/replies.json`, { signal: ctx.signal });
+              if (!en.target.isConnected || ctx.windowEpoch !== Number(en.target.dataset.windowEpoch)) return;
               if (loadingEl) loadingEl.style.display = 'none';
               if (!replies || !replies.length) return;
+              ctx.subReplyCache.set(postId, replies);
               ctx.subReplyState.set(postNumber, { all: replies, renderedCount: 0 });
               renderSubReplyBatch(postNumber, ctx); // 首批只渲染 SUB_REPLY_INITIAL_SIZE 条
             } catch (e) {
@@ -2726,6 +2854,24 @@
         }
       });
     }, { root: ctx.scrollRoot, rootMargin: '120px', threshold: 0.1 });
+
+    const clearNode = (node) => {
+      if (!node) return;
+      observer.unobserve(node);
+      const postId = node.dataset.postId;
+      if (postId && hoverTimers.has(postId)) {
+        clearTimeout(hoverTimers.get(postId));
+        hoverTimers.delete(postId);
+      }
+    };
+    const nativeDisconnect = observer.disconnect.bind(observer);
+    observer.clearNode = clearNode;
+    observer.disconnect = () => {
+      hoverTimers.forEach((timer) => clearTimeout(timer));
+      hoverTimers.clear();
+      nativeDisconnect();
+    };
+    return observer;
   }
 
   /* ============ 12. 收藏 ============ */
@@ -2792,8 +2938,9 @@
     const fill = rail.querySelector('.ldp-tl-fill');
     const thumb = rail.querySelector('.ldp-tl-thumb');
     const totalPosts = Math.max(1, topic.highest_post_number || topic.posts_count || ctx.totalComments + 1);
+    const streamLength = controls.getStreamLength();
     let raf = 0;
-    let loadingLatest = false;
+    let seeking = false;
     let cachedPosts = [];
     let currentPost = null;
     let trackHeight = Math.max(1, track.clientHeight - 16);
@@ -2801,11 +2948,14 @@
     let lastPercent = -1;
     let lastPostNumber = -1;
     let lastDate = null;
-    let lastDisabled = null;
+    let lastSeeking = null;
+    let seekToken = 0;
     let destroyed = false;
 
     topDateBtn.textContent = fmtDate(topic.created_at) || '顶部';
     bottomDateBtn.textContent = fmtDate(topic.last_posted_at || topic.bumped_at) || '底部';
+    track.setAttribute('aria-valuemin', '1');
+    track.setAttribute('aria-valuemax', String(totalPosts));
 
     const visiblePost = () => {
       if (!cachedPosts.length) return null;
@@ -2822,8 +2972,12 @@
     };
 
     const setProgress = () => {
-      const max = Math.max(1, body.scrollHeight - body.clientHeight);
-      const ratio = Math.max(0, Math.min(1, body.scrollTop / max));
+      const post = visiblePost();
+      const postNumber = post ? (+post.dataset.postNumber || 1) : 1;
+      const streamIndex = postNumber <= 1 ? -1 : controls.getStreamIndex(post.dataset.postId);
+      const ratio = streamLength
+        ? Math.max(0, Math.min(1, (streamIndex + 1) / streamLength))
+        : 0;
       if (Math.abs(ratio - lastRatio) >= 0.0005) {
         fill.style.transform = `translateX(-50%) scaleY(${ratio})`;
         thumb.style.transform = `translate(-50%,-50%) translateY(${ratio * trackHeight}px)`;
@@ -2831,24 +2985,23 @@
       }
       const percent = Math.round(ratio * 100);
       if (percent !== lastPercent) {
-        track.setAttribute('aria-valuenow', String(percent));
+        track.setAttribute('aria-valuenow', String(postNumber));
         lastPercent = percent;
       }
 
-      const post = visiblePost();
-      const postNumber = post ? (+post.dataset.postNumber || 1) : 1;
       if (postNumber !== lastPostNumber) {
         currentText.textContent = `${postNumber} / ${totalPosts}`;
         lastPostNumber = postNumber;
       }
-      const date = post ? (fmtDate(post.dataset.createdAt) || '当前') : '当前';
+      const date = seeking ? '正在定位…' : (post ? (fmtDate(post.dataset.createdAt) || '当前') : '当前');
       if (date !== lastDate) {
         currentDate.textContent = date;
         lastDate = date;
       }
-      if (loadingLatest !== lastDisabled) {
-        bottomDateBtn.disabled = loadingLatest;
-        lastDisabled = loadingLatest;
+      if (seeking !== lastSeeking) {
+        rail.setAttribute('aria-busy', seeking ? 'true' : 'false');
+        track.setAttribute('aria-busy', seeking ? 'true' : 'false');
+        lastSeeking = seeking;
       }
     };
 
@@ -2860,25 +3013,32 @@
       });
     };
 
-    const jumpTop = () => body.scrollTo({ top: 0, behavior: 'smooth' });
-    const jumpBottom = async () => {
-      if (loadingLatest) return;
-      loadingLatest = true;
+    const seek = async (index, targetPostNumber) => {
+      const token = ++seekToken;
+      seeking = true;
       rail.classList.add('ldp-tl-loading');
+      currentDate.textContent = '正在定位…';
       schedule();
       try {
-        await controls.loadToBottom();
-        body.scrollTo({ top: body.scrollHeight, behavior: 'smooth' });
+        await controls.seekToIndex(index, targetPostNumber);
+      } catch (err) {
+        if (!(err && err.name === 'AbortError')) throw err;
       } finally {
-        loadingLatest = false;
+        if (token !== seekToken) return;
+        seeking = false;
         rail.classList.remove('ldp-tl-loading');
+        lastDate = null;
         schedule();
       }
     };
 
+    const jumpTop = () => seek(0, 1);
+    const jumpBottom = () => seek(Math.max(0, streamLength - 1));
     const jumpByRatio = (ratio) => {
-      const max = Math.max(0, body.scrollHeight - body.clientHeight);
-      body.scrollTo({ top: max * Math.max(0, Math.min(1, ratio)), behavior: 'smooth' });
+      const safeRatio = Math.max(0, Math.min(1, ratio));
+      if (!streamLength || safeRatio <= 0) return jumpTop();
+      const index = Math.max(0, Math.min(streamLength - 1, Math.round(safeRatio * streamLength) - 1));
+      return seek(index);
     };
 
     const onTrackClick = (e) => {
@@ -2889,8 +3049,8 @@
     const onTrackKeydown = (e) => {
       if (e.key === 'Home') { e.preventDefault(); jumpTop(); }
       else if (e.key === 'End') { e.preventDefault(); jumpBottom(); }
-      else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); body.scrollBy({ top: -160, behavior: 'smooth' }); }
-      else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); body.scrollBy({ top: 160, behavior: 'smooth' }); }
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); jumpByRatio((lastRatio < 0 ? 0 : lastRatio) - 1 / Math.max(1, streamLength)); }
+      else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); jumpByRatio((lastRatio < 0 ? 0 : lastRatio) + 1 / Math.max(1, streamLength)); }
       else if (e.key === 'PageUp') { e.preventDefault(); body.scrollBy({ top: -body.clientHeight * 0.8, behavior: 'smooth' }); }
       else if (e.key === 'PageDown') { e.preventDefault(); body.scrollBy({ top: body.clientHeight * 0.8, behavior: 'smooth' }); }
     };
@@ -2978,16 +3138,22 @@
     });
   }
 
-  async function locatePost(targetPostNumber, ctx) {
+  async function locatePost(targetPostNumber, ctx, options) {
+    const behavior = options && options.behavior === 'smooth' ? 'smooth' : 'auto';
     if (!targetPostNumber || targetPostNumber <= 1) {
-      ctx.scrollRoot.scrollTop = 0;
+      if (behavior === 'smooth') {
+        ctx.scrollRoot.scrollTo({ top: 0, behavior });
+        await waitForScrollEnd(ctx.scrollRoot);
+      } else {
+        ctx.scrollRoot.scrollTop = 0;
+      }
       return true;
     }
     await new Promise((resolve) => requestAnimationFrame(resolve));
     const node = ctx.nodeMap.get(Number(targetPostNumber));
     if (!node) return false;
-    node.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    await waitForScrollEnd(ctx.scrollRoot);
+    node.scrollIntoView({ behavior, block: 'center' });
+    if (behavior === 'smooth') await waitForScrollEnd(ctx.scrollRoot);
     node.classList.remove('ldp-flash');
     void node.offsetWidth;
     node.classList.add('ldp-flash');
@@ -3092,6 +3258,8 @@
       topicId, op: null, topicEl, commentsEl, countEl, emptyEl, scrollRoot: body,
       nodeMap: new Map(), pending: [], tracker, totalComments: 0, repliesIO: null,
       subReplyState: new Map(), // 楼中楼原始数据 + 已渲染数量的状态表
+      subReplyCache: new Map(), // 按 postId 缓存楼中楼响应，窗口切换后可直接复用
+      windowEpoch: 0,
       footerReplyCountEl: fReplyCountEl, // 底部悬浮操作栏的评论数展示
       onPostsChanged: null,
       signal: abortController.signal,
@@ -3105,6 +3273,8 @@
     let upPromise = Promise.resolve(false), downPromise = Promise.resolve(false);
     let upIO = null, downIO = null;
     let timelineController = null;
+    let renderedRangeStart = 0, renderedRangeEnd = 0;
+    let activeUpRequest = null, activeDownRequest = null, activeSeekRequest = null;
 
     const close = () => {
       if (closed) return;
@@ -3168,21 +3338,88 @@
       updateBoundaryTips();
     };
 
+    const createRequestHandle = () => {
+      const controller = new AbortController();
+      if (abortController.signal.aborted) {
+        controller.abort();
+        return { controller, signal: controller.signal, dispose() {} };
+      }
+      const relayAbort = () => controller.abort();
+      abortController.signal.addEventListener('abort', relayAbort, { once: true });
+      return {
+        controller,
+        signal: controller.signal,
+        dispose() {
+          abortController.signal.removeEventListener('abort', relayAbort);
+        },
+      };
+    };
+
+    const syncWindowState = () => {
+      upDone = loader.topReached;
+      downDone = loader.bottomReached;
+    };
+
+    const setRenderedRange = (start, end) => {
+      renderedRangeStart = Math.max(0, Number(start) || 0);
+      renderedRangeEnd = Math.max(renderedRangeStart, Math.min(loader.streamLength, Number(end) || 0));
+      syncWindowState();
+    };
+
+    const trimOverflow = async (direction) => {
+      const span = renderedRangeEnd - renderedRangeStart;
+      if (span <= MAX_RENDERED_POSTS) return;
+      if (direction === 'append') {
+        const keepStart = Math.max(renderedRangeStart, renderedRangeEnd - MAX_RENDERED_POSTS);
+        const anchor = captureScrollAnchor(body);
+        trimRenderedRange(ctx, loader, keepStart, renderedRangeEnd);
+        renderedRangeStart = keepStart;
+        await restoreScrollAnchor(body, anchor);
+      } else {
+        const keepEnd = Math.min(renderedRangeEnd, renderedRangeStart + MAX_RENDERED_POSTS);
+        trimRenderedRange(ctx, loader, renderedRangeStart, keepEnd);
+        renderedRangeEnd = keepEnd;
+      }
+      syncWindowState();
+    };
+
+    const abortIncrementalLoads = () => {
+      if (activeUpRequest) activeUpRequest.controller.abort();
+      if (activeDownRequest) activeDownRequest.controller.abort();
+    };
+
+    const commitPreparedWindow = async (result, locateOptions) => {
+      clearCommentsWindow(ctx);
+      insertPostsBatch(result.posts, ctx, 'append');
+      loader.activateWindow(result);
+      setRenderedRange(result.start, result.end);
+      notifyPostsChanged();
+      await locatePost(result.targetPostNumber, ctx, locateOptions || { behavior: 'auto' });
+    };
+
     const pumpDown = () => {
       if (isAnchoring || loadingDown || downDone || closed) return downPromise;
       loadingDown = true;
       loadDownTip.classList.add('show');
+      const request = createRequestHandle();
+      activeDownRequest = request;
       downPromise = (async () => {
         try {
-          const result = await loader.loadDown();
-          if (closed) return false;
+          const result = await loader.prepareDown(request.signal);
+          if (closed || request.signal.aborted) return false;
           insertPostsBatch(result.posts, ctx, 'append');
-          downDone = result.done;
+          loader.activateDown(result);
+          renderedRangeEnd = result.end;
+          await trimOverflow('append');
+          syncWindowState();
           notifyPostsChanged();
           return result.posts.length > 0 || result.done;
         } catch (err) {
+          if (err && err.name === 'AbortError') return false;
           return false;
         } finally {
+          if (activeDownRequest === request) activeDownRequest = null;
+          request.dispose();
           loadingDown = false;
           loadDownTip.classList.remove('show');
         }
@@ -3194,13 +3431,15 @@
       if (isAnchoring || loadingUp || upDone || closed || body.scrollTop <= 1) return upPromise;
       loadingUp = true;
       loadUpTip.classList.add('show');
+      const request = createRequestHandle();
+      activeUpRequest = request;
       upPromise = (async () => {
         try {
           const oldHeight = body.scrollHeight;
           const oldTop = body.scrollTop;
-          const result = await loader.loadUp();
+          const result = await loader.prepareUp(request.signal);
           const loadedPosts = result.posts;
-          if (closed) return false;
+          if (closed || request.signal.aborted) return false;
 
           if (loadedPosts.length) {
             insertPostsBatch(loadedPosts, ctx, 'prepend');
@@ -3210,24 +3449,23 @@
             }));
           }
 
-          upDone = result.done;
+          loader.activateUp(result);
+          renderedRangeStart = result.start;
+          await trimOverflow('prepend');
+          syncWindowState();
           notifyPostsChanged();
           return loadedPosts.length > 0 || result.done;
         } catch (err) {
+          if (err && err.name === 'AbortError') return false;
           return false;
         } finally {
+          if (activeUpRequest === request) activeUpRequest = null;
+          request.dispose();
           loadingUp = false;
           loadUpTip.classList.remove('show');
         }
       })();
       return upPromise;
-    };
-
-    const loadToBottom = async () => {
-      while (!downDone && !closed) {
-        const progressed = await pumpDown();
-        if (!progressed && !downDone) break;
-      }
     };
 
     try {
@@ -3281,15 +3519,78 @@
 
       const resolvedTarget = resolveInitialTarget(topic, targetPostNumber);
 
-      const initial = await loader.loadInitial(resolvedTarget);
+      const initial = await loader.prepareWindowByPostNumber(resolvedTarget, abortController.signal);
       if (closed) return;
       insertPostsBatch(initial.posts, ctx, 'append');
-      upDone = loader.topReached;
-      downDone = loader.bottomReached;
+      loader.activateWindow(initial);
+      setRenderedRange(initial.start, initial.end);
 
-      timelineController = bindTimeline(modal, ctx, topic, {
-        loadToBottom,
-      });
+      const controls = {
+        getStreamLength() {
+          return loader.streamLength;
+        },
+        getStreamIndex(postId) {
+          return loader.getStreamIndex(postId);
+        },
+        async seekToIndex(index, desiredPostNumber) {
+          if (closed) return false;
+          if (activeSeekRequest) activeSeekRequest.controller.abort();
+
+          const maxIndex = Math.max(0, loader.streamLength - 1);
+          const safeIndex = Math.max(0, Math.min(maxIndex, Number(index) || 0));
+          const cachedTarget = loader.getCachedByIndex(safeIndex);
+          const localTargetPostNumber = Number(desiredPostNumber)
+            || (cachedTarget && cachedTarget.post_number)
+            || 1;
+          const smoothBehavior = (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+            ? 'auto'
+            : 'smooth';
+
+          if (
+            !activeSeekRequest
+            && localTargetPostNumber <= 1
+            && renderedRangeStart === 0
+            && body.scrollTop <= body.clientHeight
+          ) {
+            return locatePost(1, ctx, { behavior: smoothBehavior });
+          }
+
+          if (
+            !activeSeekRequest
+            && safeIndex >= renderedRangeStart
+            && safeIndex < renderedRangeEnd
+            && await locatePost(localTargetPostNumber, ctx, { behavior: smoothBehavior })
+          ) {
+            return true;
+          }
+
+          abortIncrementalLoads();
+          const request = createRequestHandle();
+          activeSeekRequest = request;
+          ctx.windowEpoch += 1;
+          const requestEpoch = ctx.windowEpoch;
+          isAnchoring = true;
+          try {
+            const result = desiredPostNumber
+              ? await loader.prepareWindowByPostNumber(desiredPostNumber, request.signal)
+              : await loader.prepareWindowByIndex(safeIndex, request.signal);
+            if (closed || request.signal.aborted || ctx.windowEpoch !== requestEpoch) return false;
+            await commitPreparedWindow(result, { behavior: 'auto' });
+            return true;
+          } catch (err) {
+            if (err && err.name === 'AbortError') return false;
+            throw err;
+          } finally {
+            if (activeSeekRequest === request) {
+              activeSeekRequest = null;
+              isAnchoring = false;
+            }
+            request.dispose();
+          }
+        },
+      };
+
+      timelineController = bindTimeline(modal, ctx, topic, controls);
       ctx.onPostsChanged = timelineController.refresh;
 
       bindActions(modal, ctx);
@@ -3307,7 +3608,7 @@
       maskEl.classList.add('hide');
       setTimeout(() => maskEl.remove(), 300);
 
-      await locatePost(initial.targetPostNumber, ctx);
+      await locatePost(initial.targetPostNumber, ctx, { behavior: 'auto' });
       isAnchoring = false;
       updateBoundaryTips();
 
