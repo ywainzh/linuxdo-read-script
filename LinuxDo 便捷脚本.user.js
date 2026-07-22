@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.19
+// @version      1.1.20
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
 // @author       Fashion
@@ -71,6 +71,7 @@
     .ldp-obsidian-save{width:32px;height:32px;padding:0;color:#fff;background:#7c3aed;}
     .ldp-obsidian-save:hover{background:#6d28d9;}
     .ldp-obsidian-save svg,.ldp-obsidian-copy svg,.ldp-obsidian-settings svg{width:16px;height:16px;fill:currentColor;flex:none;}
+    .ldp-obsidian-label{display:none;}
     .ldp-obsidian-copy,.ldp-obsidian-settings{width:32px;height:32px;padding:0;color:var(--primary-medium,#667085);
       background:var(--primary-very-low,#f7f7f8);border-color:var(--primary-low,#e5e7eb);}
     .ldp-obsidian-copy:hover,.ldp-obsidian-settings:hover{color:#7c3aed;border-color:rgba(124,58,237,.42);
@@ -469,6 +470,8 @@
     bookmark: '<path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/>',
     // 新标签页打开
     newTab: '<path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>',
+    // 下载到托盘
+    download: '<path d="M11 3h2v10.17l3.59-3.58L18 11l-6 6-6-6 1.41-1.41L11 13.17V3ZM5 19h14v2H5v-2Z"/>',
     // Obsidian 水晶与设置
     obsidian: '<path d="M12 1.8 19.2 7l-1.8 11.1L12 22l-5.4-3.9L4.8 7 12 1.8Zm0 3L8 7.7l1.3 8.8 2.7 2 2.7-2L16 7.7 12 4.8Z"/>',
     settings: '<path d="M19.4 13a7.8 7.8 0 0 0 .1-1 7.8 7.8 0 0 0-.1-1l2.1-1.6-2-3.4-2.5 1a7.7 7.7 0 0 0-1.7-1L15 3.3h-4L10.6 6a7.7 7.7 0 0 0-1.7 1L6.4 6l-2 3.4L6.5 11a7.8 7.8 0 0 0-.1 1 7.8 7.8 0 0 0 .1 1l-2.1 1.6 2 3.4 2.5-1a7.7 7.7 0 0 0 1.7 1l.4 2.7h4l.4-2.7a7.7 7.7 0 0 0 1.7-1l2.5 1 2-3.4L19.4 13ZM13 15.5A3.5 3.5 0 1 1 13 8a3.5 3.5 0 0 1 0 7.5Z"/>',
@@ -742,7 +745,7 @@
     group.innerHTML = `
       <button type="button" class="ldp-obsidian-save" data-ldp-obsidian-save
         title="将楼主首帖保存为新的 Obsidian 快照" aria-label="保存到 Obsidian">
-        <svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.obsidian}</svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.download}</svg>
         <span class="ldp-obsidian-label"></span>
       </button>
       <button type="button" class="ldp-obsidian-copy" data-ldp-obsidian-copy
