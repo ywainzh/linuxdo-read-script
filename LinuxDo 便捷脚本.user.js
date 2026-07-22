@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.18
+// @version      1.1.19
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
 // @author       Fashion
@@ -64,19 +64,19 @@
       line-height:1;color:inherit;padding:0 4px;}
     /* Obsidian 快照：只在主操作上使用品牌紫色，其余控件沿用论坛主题 */
     .ldp-obsidian-actions{display:inline-flex;align-items:center;gap:6px;flex:none;}
-    .ldp-obsidian-save,.ldp-obsidian-settings{display:inline-flex;align-items:center;
+    .ldp-obsidian-save,.ldp-obsidian-copy,.ldp-obsidian-settings{display:inline-flex;align-items:center;
       justify-content:center;border:1px solid transparent;border-radius:7px;cursor:pointer;
       font:600 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
       transition:background-color .16s ease,border-color .16s ease,color .16s ease,opacity .16s ease;}
     .ldp-obsidian-save{width:32px;height:32px;padding:0;color:#fff;background:#7c3aed;}
     .ldp-obsidian-save:hover{background:#6d28d9;}
-    .ldp-obsidian-save svg,.ldp-obsidian-settings svg{width:16px;height:16px;fill:currentColor;flex:none;}
-    .ldp-obsidian-settings{width:32px;height:32px;padding:0;color:var(--primary-medium,#667085);
+    .ldp-obsidian-save svg,.ldp-obsidian-copy svg,.ldp-obsidian-settings svg{width:16px;height:16px;fill:currentColor;flex:none;}
+    .ldp-obsidian-copy,.ldp-obsidian-settings{width:32px;height:32px;padding:0;color:var(--primary-medium,#667085);
       background:var(--primary-very-low,#f7f7f8);border-color:var(--primary-low,#e5e7eb);}
-    .ldp-obsidian-settings:hover{color:#7c3aed;border-color:rgba(124,58,237,.42);
+    .ldp-obsidian-copy:hover,.ldp-obsidian-settings:hover{color:#7c3aed;border-color:rgba(124,58,237,.42);
       background:rgba(124,58,237,.08);}
-    .ldp-obsidian-save:disabled,.ldp-obsidian-settings:disabled{cursor:wait;opacity:.62;}
-    .ldp-obsidian-save:focus-visible,.ldp-obsidian-settings:focus-visible,
+    .ldp-obsidian-save:disabled,.ldp-obsidian-copy:disabled,.ldp-obsidian-settings:disabled{cursor:wait;opacity:.62;}
+    .ldp-obsidian-save:focus-visible,.ldp-obsidian-copy:focus-visible,.ldp-obsidian-settings:focus-visible,
     .ldp-obsidian-dialog button:focus-visible,.ldp-obsidian-dialog input:focus-visible,
     .ldp-obsidian-dialog select:focus-visible{outline:2px solid #8b5cf6;outline-offset:2px;}
     .ldp-obsidian-page-actions{width:max-content;margin:8px 0 8px auto;}
@@ -126,7 +126,7 @@
     .ldp-obsidian-toast[data-type="success"]{background:#166534;}
     .ldp-obsidian-toast[data-type="error"]{background:#b42318;}
     @media (prefers-reduced-motion:reduce){
-      .ldp-obsidian-save,.ldp-obsidian-settings{transition:none;}
+      .ldp-obsidian-save,.ldp-obsidian-copy,.ldp-obsidian-settings{transition:none;}
     }
     .ldp-shell{flex:1;min-height:0;position:relative;display:flex;}
     .ldp-body{flex:1;min-width:0;min-height:0;position:relative;
@@ -471,7 +471,9 @@
     newTab: '<path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>',
     // Obsidian 水晶与设置
     obsidian: '<path d="M12 1.8 19.2 7l-1.8 11.1L12 22l-5.4-3.9L4.8 7 12 1.8Zm0 3L8 7.7l1.3 8.8 2.7 2 2.7-2L16 7.7 12 4.8Z"/>',
-    settings: '<path d="M19.4 13a7.8 7.8 0 0 0 .1-1 7.8 7.8 0 0 0-.1-1l2.1-1.6-2-3.4-2.5 1a7.7 7.7 0 0 0-1.7-1L15 3.3h-4L10.6 6a7.7 7.7 0 0 0-1.7 1L6.4 6l-2 3.4L6.5 11a7.8 7.8 0 0 0-.1 1 7.8 7.8 0 0 0 .1 1l-2.1 1.6 2 3.4 2.5-1a7.7 7.7 0 0 0 1.7 1l.4 2.7h4l.4-2.7a7.7 7.7 0 0 0 1.7-1l2.5 1 2-3.4L19.4 13ZM13 15.5A3.5 3.5 0 1 1 13 8a3.5 3.5 0 0 1 0 7.5Z"/>'
+    settings: '<path d="M19.4 13a7.8 7.8 0 0 0 .1-1 7.8 7.8 0 0 0-.1-1l2.1-1.6-2-3.4-2.5 1a7.7 7.7 0 0 0-1.7-1L15 3.3h-4L10.6 6a7.7 7.7 0 0 0-1.7 1L6.4 6l-2 3.4L6.5 11a7.8 7.8 0 0 0-.1 1 7.8 7.8 0 0 0 .1 1l-2.1 1.6 2 3.4 2.5-1a7.7 7.7 0 0 0 1.7 1l.4 2.7h4l.4-2.7a7.7 7.7 0 0 0 1.7-1l2.5 1 2-3.4L19.4 13ZM13 15.5A3.5 3.5 0 1 1 13 8a3.5 3.5 0 0 1 0 7.5Z"/>',
+    // 复制
+    copy: '<path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z"/>'
   };
 
   /* ============ 2. 工具 ============ */
@@ -723,6 +725,16 @@
     });
   }
 
+  async function copyTopicUrl(topicId) {
+    const topicUrl = `${BASE}/t/${encodeURIComponent(String(topicId))}`;
+    try {
+      await copyText(topicUrl);
+      showObsidianToast('帖子链接已复制', 'success');
+    } catch (error) {
+      showObsidianToast('复制失败，请检查浏览器剪贴板权限', 'error');
+    }
+  }
+
   function createObsidianActionGroup(topicId, topicProvider, extraClass) {
     const group = document.createElement('div');
     group.className = 'ldp-obsidian-actions' + (extraClass ? ` ${extraClass}` : '');
@@ -733,11 +745,16 @@
         <svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.obsidian}</svg>
         <span class="ldp-obsidian-label"></span>
       </button>
+      <button type="button" class="ldp-obsidian-copy" data-ldp-obsidian-copy
+        title="复制帖子链接" aria-label="复制帖子链接">
+        <svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.copy}</svg>
+      </button>
       <button type="button" class="ldp-obsidian-settings" data-ldp-obsidian-settings
         title="设置 Obsidian 连接" aria-label="设置 Obsidian 连接">
         <svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.settings}</svg>
       </button>`;
     const saveButton = group.querySelector('[data-ldp-obsidian-save]');
+    const copyButton = group.querySelector('[data-ldp-obsidian-copy]');
     const settingsButton = group.querySelector('[data-ldp-obsidian-settings]');
     saveButton.querySelector('.ldp-obsidian-label').textContent = OBSIDIAN_SAVE_TEXT;
     saveButton.disabled = OBSIDIAN_SAVING;
@@ -748,6 +765,11 @@
       event.stopPropagation();
       const suppliedTopic = typeof topicProvider === 'function' ? topicProvider() : null;
       saveTopicToObsidian(topicId, suppliedTopic);
+    });
+    copyButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      copyTopicUrl(topicId);
     });
     settingsButton.addEventListener('click', (event) => {
       event.preventDefault();
