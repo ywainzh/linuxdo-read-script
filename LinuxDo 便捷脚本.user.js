@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.20
+// @version      1.1.21
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
 // @author       Fashion
@@ -62,20 +62,18 @@
     .ldp-head-btns{display:flex;gap:8px;align-items:center;}
     .ldp-close{cursor:pointer;border:none;background:transparent;font-size:22px;
       line-height:1;color:inherit;padding:0 4px;}
-    /* Obsidian 快照：只在主操作上使用品牌紫色，其余控件沿用论坛主题 */
+    /* Obsidian 快照操作沿用论坛主题，保持工具按钮视觉一致 */
     .ldp-obsidian-actions{display:inline-flex;align-items:center;gap:6px;flex:none;}
     .ldp-obsidian-save,.ldp-obsidian-copy,.ldp-obsidian-settings{display:inline-flex;align-items:center;
       justify-content:center;border:1px solid transparent;border-radius:7px;cursor:pointer;
       font:600 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
       transition:background-color .16s ease,border-color .16s ease,color .16s ease,opacity .16s ease;}
-    .ldp-obsidian-save{width:32px;height:32px;padding:0;color:#fff;background:#7c3aed;}
-    .ldp-obsidian-save:hover{background:#6d28d9;}
     .ldp-obsidian-save svg,.ldp-obsidian-copy svg,.ldp-obsidian-settings svg{width:16px;height:16px;fill:currentColor;flex:none;}
     .ldp-obsidian-label{display:none;}
-    .ldp-obsidian-copy,.ldp-obsidian-settings{width:32px;height:32px;padding:0;color:var(--primary-medium,#667085);
+    .ldp-obsidian-save,.ldp-obsidian-copy,.ldp-obsidian-settings{width:32px;height:32px;padding:0;color:var(--primary-medium,#667085);
       background:var(--primary-very-low,#f7f7f8);border-color:var(--primary-low,#e5e7eb);}
-    .ldp-obsidian-copy:hover,.ldp-obsidian-settings:hover{color:#7c3aed;border-color:rgba(124,58,237,.42);
-      background:rgba(124,58,237,.08);}
+    .ldp-obsidian-save:hover,.ldp-obsidian-copy:hover,.ldp-obsidian-settings:hover{color:var(--primary,#1f2937);
+      border-color:var(--primary-medium,#9ca3af);background:var(--primary-low,#e9e9e9);}
     .ldp-obsidian-save:disabled,.ldp-obsidian-copy:disabled,.ldp-obsidian-settings:disabled{cursor:wait;opacity:.62;}
     .ldp-obsidian-save:focus-visible,.ldp-obsidian-copy:focus-visible,.ldp-obsidian-settings:focus-visible,
     .ldp-obsidian-dialog button:focus-visible,.ldp-obsidian-dialog input:focus-visible,
