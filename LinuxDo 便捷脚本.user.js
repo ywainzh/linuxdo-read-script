@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.17
+// @version      1.1.18
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
 // @author       Fashion
@@ -68,7 +68,7 @@
       justify-content:center;border:1px solid transparent;border-radius:7px;cursor:pointer;
       font:600 13px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
       transition:background-color .16s ease,border-color .16s ease,color .16s ease,opacity .16s ease;}
-    .ldp-obsidian-save{min-height:32px;gap:7px;padding:7px 10px;color:#fff;background:#7c3aed;}
+    .ldp-obsidian-save{width:32px;height:32px;padding:0;color:#fff;background:#7c3aed;}
     .ldp-obsidian-save:hover{background:#6d28d9;}
     .ldp-obsidian-save svg,.ldp-obsidian-settings svg{width:16px;height:16px;fill:currentColor;flex:none;}
     .ldp-obsidian-settings{width:32px;height:32px;padding:0;color:var(--primary-medium,#667085);
@@ -729,7 +729,7 @@
     group.dataset.topicId = String(topicId);
     group.innerHTML = `
       <button type="button" class="ldp-obsidian-save" data-ldp-obsidian-save
-        title="将楼主首帖保存为新的 Obsidian 快照">
+        title="将楼主首帖保存为新的 Obsidian 快照" aria-label="保存到 Obsidian">
         <svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.obsidian}</svg>
         <span class="ldp-obsidian-label"></span>
       </button>
