@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.21
+// @version      1.1.22
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
 // @author       Fashion
@@ -57,7 +57,14 @@
       box-shadow:0 16px 50px rgba(0,0,0,.4);}
     .ldp-header{display:flex;align-items:flex-start;gap:10px;padding:16px 20px;
       border-bottom:1px solid var(--primary-low,#e5e5e5);}
-    .ldp-title{margin:0;font-size:18px;font-weight:700;}
+    .ldp-header-main{flex:1;min-width:0;}
+    .ldp-title{margin:0;font-size:18px;font-weight:700;line-height:1.35;}
+    .ldp-title-context{display:flex;align-items:center;gap:6px;margin-top:6px;}
+    .ldp-title-context[hidden]{display:none;}
+    .ldp-topic-level{display:inline-flex;align-items:center;justify-content:center;
+      min-height:20px;padding:1px 8px;border-radius:5px;color:var(--ldp-level-fg,#fff);
+      background:var(--ldp-level-bg,#64748b);box-shadow:inset 0 0 0 1px rgba(0,0,0,.08);
+      font-size:11px;font-weight:750;line-height:1.2;letter-spacing:.04em;white-space:nowrap;}
     .ldp-meta{font-size:12px;opacity:.7;margin-top:4px;}
     .ldp-head-btns{display:flex;gap:8px;align-items:center;}
     .ldp-close{cursor:pointer;border:none;background:transparent;font-size:22px;
@@ -269,6 +276,10 @@
     .ldp-user-card-name{min-width:0;padding-bottom:4px;}
     .ldp-user-card-name strong{display:block;font-size:22px;line-height:1.1;}
     .ldp-user-card-name span{display:block;opacity:.68;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .ldp-user-card-name .ldp-user-level{display:inline-flex;max-width:100%;margin-top:7px;
+      padding:3px 8px;border:1px solid var(--primary-low,#dfe3e8);border-radius:999px;
+      color:var(--primary-high,#374151);background:var(--primary-very-low,#f6f7f8);
+      font-size:11px;font-weight:700;line-height:1.25;letter-spacing:.01em;opacity:1;}
     .ldp-user-card-loading,.ldp-user-card-error{padding:16px;opacity:.72;}
     .ldp-user-card-bio{margin:12px 0 0;color:var(--primary,#222);}
     .ldp-user-card-meta{display:grid;gap:5px;margin:12px 0 0;font-size:13px;opacity:.82;}
@@ -675,7 +686,7 @@
   let OBSIDIAN_SAVE_TEXT = '保存到 Obsidian';
   let CURRENT_OBSIDIAN_DIALOG_CLOSE = null;
   let OBSIDIAN_PAGE_ACTIONS_RAF = 0;
-  let OBSIDIAN_CATEGORY_SITE = null;
+  let CATEGORY_SITE_CACHE = null;
 
   function getGMMethod(name) {
     if (typeof GM !== 'undefined' && GM && typeof GM[name] === 'function') {
@@ -1234,15 +1245,81 @@
     if (direct) return direct;
     if (!topic.category_id) return '未分类';
     try {
-      if (!OBSIDIAN_CATEGORY_SITE) {
-        OBSIDIAN_CATEGORY_SITE = await fetchJSON(`${BASE}/site.json`, { cache: 'force-cache' });
+      if (!CATEGORY_SITE_CACHE) {
+        CATEGORY_SITE_CACHE = await fetchJSON(`${BASE}/site.json`, { cache: 'force-cache' });
       }
-      const categories = OBSIDIAN_CATEGORY_SITE.categories || [];
+      const categories = CATEGORY_SITE_CACHE.categories || [];
       const category = categories.find((item) => Number(item.id) === Number(topic.category_id));
       return String((category && category.name) || '').trim() || '未分类';
     } catch (error) {
       return '未分类';
     }
+  }
+
+  function topicLevelNumber(value) {
+    const text = String(value || '');
+    const lvMatch = text.match(/(?:^|[\s,，/_-])lv\s*-?(\d+)(?=$|[\s,，/_-])/i);
+    if (lvMatch) return Number(lvMatch[1]);
+    const cnMatch = text.match(/(?:^|\D)(\d+)\s*级用户/);
+    return cnMatch ? Number(cnMatch[1]) : null;
+  }
+
+  function categoryHexColor(value, fallback) {
+    const color = String(value || '').trim().replace(/^#/, '');
+    return /^[0-9a-f]{6}$/i.test(color) ? `#${color}` : fallback;
+  }
+
+  async function getTopicLevelInfo(topic, signal) {
+    const directCategory = topic && topic.category && typeof topic.category === 'object'
+      ? topic.category : null;
+    const directName = String((directCategory && directCategory.name)
+      || (topic && topic.category_name) || '').trim();
+    const directSlug = String((directCategory && directCategory.slug)
+      || (topic && topic.category_slug) || '').trim();
+    let category = directCategory;
+    let level = topicLevelNumber(`${directName} ${directSlug}`);
+
+    if (level === null && topic && topic.category_id) {
+      try {
+        if (!CATEGORY_SITE_CACHE) {
+          CATEGORY_SITE_CACHE = await fetchJSON(`${BASE}/site.json`, {
+            cache: 'force-cache', signal,
+          });
+        }
+        const categories = CATEGORY_SITE_CACHE.categories || [];
+        category = categories.find((item) => Number(item.id) === Number(topic.category_id)) || category;
+        level = topicLevelNumber([
+          category && category.name,
+          category && category.slug,
+          category && (category.description_text || category.description),
+        ].filter(Boolean).join(' '));
+      } catch (error) {
+        if (error && error.name === 'AbortError') throw error;
+      }
+    }
+
+    if (level === null || !Number.isFinite(level)) return null;
+    const categoryName = String((category && category.name) || directName || '').trim();
+    return {
+      label: `Lv${level}`,
+      title: categoryName ? `帖子等级：Lv${level} · ${categoryName}` : `帖子等级：Lv${level}`,
+      background: categoryHexColor(category && category.color, '#64748b'),
+      foreground: categoryHexColor(category && category.text_color, '#ffffff'),
+    };
+  }
+
+  async function renderTopicLevel(topic, root, signal) {
+    const context = root.querySelector('.ldp-title-context');
+    const badge = root.querySelector('.ldp-topic-level');
+    if (!context || !badge) return;
+    const info = await getTopicLevelInfo(topic, signal);
+    if (!info || !badge.isConnected) return;
+    badge.textContent = info.label;
+    badge.title = info.title;
+    badge.setAttribute('aria-label', info.title);
+    badge.style.setProperty('--ldp-level-bg', info.background);
+    badge.style.setProperty('--ldp-level-fg', info.foreground);
+    context.hidden = false;
   }
 
   async function loadObsidianTopic(topicId, suppliedTopic) {
@@ -1513,6 +1590,26 @@
     return text ? `<div class="ldp-user-card-stat"><strong>${esc(text)}</strong><span>${esc(label)}</span></div>` : '';
   }
 
+  const TRUST_LEVEL_LABELS = {
+    0: '新用户',
+    1: '基本用户',
+    2: '成员',
+    3: '活跃用户',
+    4: '领导者',
+  };
+
+  function userTrustLevelText(user) {
+    const rawLevel = user && user.trust_level;
+    const numericLevel = rawLevel === null || rawLevel === undefined || rawLevel === ''
+      ? null : Number(rawLevel);
+    const level = Number.isInteger(numericLevel) && numericLevel >= 0 ? numericLevel : null;
+    const suppliedLabel = String(
+      (user && (user.trust_level_name || user.trust_level_label || user.trust_level_title)) || ''
+    ).trim();
+    const label = suppliedLabel || (level !== null ? TRUST_LEVEL_LABELS[level] : '') || '';
+    return [level !== null ? `Lv${level}` : '', label].filter(Boolean).join(' · ');
+  }
+
   function renderUserCard(user, username) {
     const profileUsername = user.username || username;
     const avatar = resolveAvatar(user.avatar_template, 160);
@@ -1523,6 +1620,7 @@
     const website = user.website || user.website_name || '';
     const websiteUrl = website && (/^https?:\/\//i.test(website) ? website : `https://${website}`);
     const locationText = user.location || (user.custom_fields && user.custom_fields.location) || '';
+    const trustLevelText = userTrustLevelText(user);
     const summary = user.summary || {};
     const statsHtml = [
       userCardStat('帖子', user.post_count ?? summary.post_count),
@@ -1546,6 +1644,7 @@
           <div class="ldp-user-card-name">
             <strong>${esc(name)}</strong>
             <span>@${esc(profileUsername)}</span>
+            ${trustLevelText ? `<span class="ldp-user-level" title="信任级别">${esc(trustLevelText)}</span>` : ''}
           </div>
         </div>
         ${bio ? `<div class="ldp-user-card-bio">${esc(bio.slice(0, 140))}${bio.length > 140 ? '…' : ''}</div>` : ''}
@@ -3198,8 +3297,11 @@
     overlay.innerHTML = `
       <div class="ldp-modal">
         <div class="ldp-header">
-          <div style="flex:1">
+          <div class="ldp-header-main">
             <h2 class="ldp-title"><span class="ldp-sk ldp-sk-title"></span></h2>
+            <div class="ldp-title-context" hidden>
+              <span class="ldp-topic-level"></span>
+            </div>
             <div class="ldp-meta"><span class="ldp-sk ldp-sk-meta"></span></div>
           </div>
           <div class="ldp-head-btns">
@@ -3547,6 +3649,7 @@
       insertPostsBatch(initial.posts, ctx, 'append');
       loader.activateWindow(initial);
       setRenderedRange(initial.start, initial.end);
+      renderTopicLevel(topic, overlay, abortController.signal).catch(() => {});
 
       const controls = {
         getStreamLength() {
