@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.22
+// @version      1.1.24
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
 // @author       Fashion
@@ -58,13 +58,19 @@
     .ldp-header{display:flex;align-items:flex-start;gap:10px;padding:16px 20px;
       border-bottom:1px solid var(--primary-low,#e5e5e5);}
     .ldp-header-main{flex:1;min-width:0;}
+    .ldp-title-lockup{display:flex;align-items:flex-start;gap:9px;min-width:0;}
+    .ldp-title-copy{flex:1;min-width:0;}
     .ldp-title{margin:0;font-size:18px;font-weight:700;line-height:1.35;}
-    .ldp-title-context{display:flex;align-items:center;gap:6px;margin-top:6px;}
+    .ldp-title-context{display:flex;align-items:flex-start;flex:none;padding-top:1px;}
     .ldp-title-context[hidden]{display:none;}
     .ldp-topic-level{display:inline-flex;align-items:center;justify-content:center;
-      min-height:20px;padding:1px 8px;border-radius:5px;color:var(--ldp-level-fg,#fff);
-      background:var(--ldp-level-bg,#64748b);box-shadow:inset 0 0 0 1px rgba(0,0,0,.08);
-      font-size:11px;font-weight:750;line-height:1.2;letter-spacing:.04em;white-space:nowrap;}
+      box-sizing:border-box;width:44px;min-width:44px;min-height:23px;padding:2px 5px;border:1px solid var(--ldp-level-border,#c8a56a);
+      border-radius:7px 7px 7px 3px;color:var(--ldp-level-fg,#4a3515);
+      background:var(--ldp-level-bg,#f2cc73);
+      box-shadow:0 1px 0 rgba(74,47,32,.08);
+      font-size:11px;font-weight:800;line-height:1.2;letter-spacing:.02em;white-space:nowrap;}
+    .ldp-topic-level::before{content:"";width:4px;height:4px;margin-right:4px;border-radius:50%;
+      background:currentColor;opacity:.58;}
     .ldp-meta{font-size:12px;opacity:.7;margin-top:4px;}
     .ldp-head-btns{display:flex;gap:8px;align-items:center;}
     .ldp-close{cursor:pointer;border:none;background:transparent;font-size:22px;
@@ -171,6 +177,7 @@
       outline:2px solid var(--tertiary,#08c);outline-offset:2px;}
     @media (max-width: 760px){
       .ldp-modal{width:96%;height:92vh;}
+      .ldp-header{padding-left:16px;padding-right:16px;}
       .ldp-obsidian-label{display:none;}
       .ldp-obsidian-save{width:32px;padding:0;}
       .ldp-obsidian-page-actions{margin-top:6px;}
@@ -183,6 +190,12 @@
       .ldp-tl-date{font-size:11px;}
       .ldp-tl-current strong{font-size:13px;}
       .ldp-tl-current span{display:none;}
+    }
+    @media (max-width: 420px){
+      .ldp-header{gap:6px;}
+      .ldp-title-lockup{gap:7px;}
+      .ldp-title{font-size:16px;}
+      .ldp-topic-level{width:42px;min-width:42px;padding-left:4px;padding-right:4px;}
     }
 
     /* 底部悬浮操作栏 */
@@ -1264,9 +1277,16 @@
     return cnMatch ? Number(cnMatch[1]) : null;
   }
 
-  function categoryHexColor(value, fallback) {
-    const color = String(value || '').trim().replace(/^#/, '');
-    return /^[0-9a-f]{6}$/i.test(color) ? `#${color}` : fallback;
+  const TOPIC_LEVEL_PALETTE = {
+    1: { background: '#F2CC73', foreground: '#4A3515', border: '#D6AA45' },
+    2: { background: '#E9AB68', foreground: '#4A2D16', border: '#D48743' },
+    3: { background: '#D8A078', foreground: '#4A2F20', border: '#C47B52' },
+  };
+
+  function topicLevelPalette(level) {
+    return TOPIC_LEVEL_PALETTE[level] || {
+      background: '#D8B27A', foreground: '#4A351D', border: '#C4965A',
+    };
   }
 
   async function getTopicLevelInfo(topic, signal) {
@@ -1300,11 +1320,13 @@
 
     if (level === null || !Number.isFinite(level)) return null;
     const categoryName = String((category && category.name) || directName || '').trim();
+    const palette = topicLevelPalette(level);
     return {
       label: `Lv${level}`,
       title: categoryName ? `帖子等级：Lv${level} · ${categoryName}` : `帖子等级：Lv${level}`,
-      background: categoryHexColor(category && category.color, '#64748b'),
-      foreground: categoryHexColor(category && category.text_color, '#ffffff'),
+      background: palette.background,
+      foreground: palette.foreground,
+      border: palette.border,
     };
   }
 
@@ -1319,6 +1341,7 @@
     badge.setAttribute('aria-label', info.title);
     badge.style.setProperty('--ldp-level-bg', info.background);
     badge.style.setProperty('--ldp-level-fg', info.foreground);
+    badge.style.setProperty('--ldp-level-border', info.border);
     context.hidden = false;
   }
 
@@ -3298,11 +3321,15 @@
       <div class="ldp-modal">
         <div class="ldp-header">
           <div class="ldp-header-main">
-            <h2 class="ldp-title"><span class="ldp-sk ldp-sk-title"></span></h2>
-            <div class="ldp-title-context" hidden>
-              <span class="ldp-topic-level"></span>
+            <div class="ldp-title-lockup">
+              <div class="ldp-title-context" hidden>
+                <span class="ldp-topic-level"></span>
+              </div>
+              <div class="ldp-title-copy">
+                <h2 class="ldp-title"><span class="ldp-sk ldp-sk-title"></span></h2>
+                <div class="ldp-meta"><span class="ldp-sk ldp-sk-meta"></span></div>
+              </div>
             </div>
-            <div class="ldp-meta"><span class="ldp-sk ldp-sk-meta"></span></div>
           </div>
           <div class="ldp-head-btns">
             <button class="ldp-close" title="关闭">×</button>

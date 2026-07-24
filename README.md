@@ -2,7 +2,7 @@
 
 > 在 LINUX DO 与 IDC Flare 列表页点击标题即可弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读进度与 Obsidian 首帖快照——无需离开列表页，也无需反复返回。
 
-![version](https://img.shields.io/badge/version-1.1.22-blue)
+![version](https://img.shields.io/badge/version-1.1.24-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-red)](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)
@@ -22,7 +22,7 @@
 - **请求限流与自动重试**：只读请求统一串行并保持最小间隔；遇到 HTTP 429 会遵循 `Retry-After` 或指数退避后自动重试。
 - **未读蓝点**：弹窗内未读楼层会显示类似原帖的小蓝点，阅读并成功上报后自动消失。
 - **点赞 / 取消赞**：显示点赞数，支持一键点赞与取消（取消受 Discourse 时间窗限制）。
-- **等级信息**：标题区显示帖子的限制分类等级（如 `Lv2`）；点击楼层头像后，用户详情卡片会显示信任等级和对应名称。
+- **等级信息**：标题左侧显示帖子的限制分类等级（如 `Lv2`）；点击楼层头像后，用户详情卡片会显示信任等级和对应名称。
 - **用户详情卡片**：点击弹窗内楼层头像可查看用户详情；在详情卡片中再次点击头像会新开标签进入用户主页。
 - **楼内回复**：可对任意楼层回复，发送后即时插入为该楼的楼中楼子节点。
 - **整帖收藏 / 取消收藏**：调用 Discourse 书签接口。
