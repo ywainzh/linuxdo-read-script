@@ -159,15 +159,18 @@ async function bootReader(page, options = {}) {
       return;
     }
     if (url.pathname === '/u/member0.json') {
+      requests.push({ type: 'user-profile', at: Date.now() });
       await new Promise((resolve) => setTimeout(resolve, 60));
       await route.fulfill({ json: { user: { id: 10, username: 'member0', name: 'Member Zero', avatar_template: '/avatars/member/{size}.png', trust_level: 2, bio_excerpt: 'Profile loaded in phases.', can_follow: true } } });
       return;
     }
     if (url.pathname === '/u/member0/summary.json') {
+      requests.push({ type: 'user-summary', at: Date.now() });
       await route.fulfill({ json: { user_summary: { post_count: 320, topic_count: 12, likes_received: 90 } } });
       return;
     }
     if (url.pathname === '/user-badges/member0.json') {
+      requests.push({ type: 'user-badges', at: Date.now() });
       await route.fulfill({ json: { user_badges: [{ badge: { name: 'Contributor', description: 'Test badge' } }] } });
       return;
     }
@@ -222,6 +225,28 @@ test('opens immediately near a distant target without requesting middle ranges',
   expect(requestedIds.some((id) => id > postId(100) && id < postId(1900))).toBeFalsy();
 });
 
+test('returns from a distant floor to the real top of the reader', async ({ page }) => {
+  await bootReader(page);
+  await page.locator('.ldp-tl-top-date').click();
+  await expect.poll(() => page.locator('.ldp-body').evaluate((node) => node.scrollTop)).toBe(0);
+  await expect(page.locator('.ldp-tl-current-post')).toHaveText(`1 / ${POST_COUNT}`);
+});
+
+test('keeps original topic actions in the footer and groups collection tools on the right', async ({ page }) => {
+  await bootReader(page, { target: 12 });
+  await expect(page.locator('.ldp-footer')).toBeVisible();
+  await expect(page.locator('.ldp-footer .ldp-fbtn')).toHaveCount(5);
+  await expect(page.locator('.ldp-toolbar-group [data-reader-action="history"]')).toHaveCount(0);
+  await expect(page.locator('.ldp-head-btns [data-reader-action="history"]')).toHaveCount(1);
+  await expect(page.locator('.ldp-head-btns [data-reader-action="collections"]')).toHaveCount(1);
+  await expect(page.locator('.ldp-topic > .ldp-post > .ldp-actions')).toBeHidden();
+  await page.locator('.ldp-f-like').click();
+  await expect(page.locator('.ldp-f-like')).toHaveClass(/liked/);
+  await page.locator('.ldp-f-bookmark').click();
+  await expect(page.locator('.ldp-f-bookmark')).toHaveClass(/bookmarked/);
+  await expect(page.locator('.ldp-topic-bookmark')).toHaveClass(/bookmarked/);
+});
+
 test('preserves the visible anchor when an earlier image changes height', async ({ page }) => {
   await bootReader(page);
   const target = page.locator('.ldp-post[data-post-number="2000"]').first();
@@ -265,6 +290,21 @@ test('renders the user card immediately and enriches it in phases', async ({ pag
   await expect(page.locator('.ldp-user-card-v2')).toContainText('@member0');
   await expect(page.locator('.ldp-user-card-v2')).toContainText('Member Zero');
   await expect(page.locator('.ldp-user-card-v2')).toContainText('Contributor');
+});
+
+test('reopens a fresh user card from memory without duplicate profile requests', async ({ page }) => {
+  const requests = await bootReader(page, { target: 12 });
+  const avatar = page.locator('.ldp-post[data-post-number="12"] .ldp-avatar-btn').first();
+  await avatar.click();
+  await expect(page.locator('.ldp-user-card-v2')).toContainText('Contributor');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.ldp-user-card-v2')).toHaveCount(0);
+  await avatar.click();
+  await expect(page.locator('.ldp-user-card-v2')).toContainText('Member Zero');
+  await page.waitForTimeout(150);
+  expect(requests.filter((item) => item.type === 'user-profile')).toHaveLength(1);
+  expect(requests.filter((item) => item.type === 'user-summary')).toHaveLength(1);
+  expect(requests.filter((item) => item.type === 'user-badges')).toHaveLength(1);
 });
 
 test('keeps the virtual window bounded during long scrolling', async ({ page }) => {
