@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      2.0.1
+// @version      2.0.2
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 高性能浮窗阅读帖子，支持虚拟楼层、历史收藏、互动、用户卡片和 Obsidian 快照。
 // @author       Fashion
@@ -81,16 +81,6 @@
     .ldp-title-lockup{display:flex;align-items:flex-start;gap:9px;min-width:0;}
     .ldp-title-copy{flex:1;min-width:0;}
     .ldp-title{margin:0;font-size:18px;font-weight:700;line-height:1.35;}
-    .ldp-title-context{display:flex;align-items:flex-start;flex:none;padding-top:1px;}
-    .ldp-title-context[hidden]{display:none;}
-    .ldp-topic-level{display:inline-flex;align-items:center;justify-content:center;
-      box-sizing:border-box;width:44px;min-width:44px;min-height:23px;padding:2px 5px;border:1px solid var(--ldp-level-border,#c8a56a);
-      border-radius:7px 7px 7px 3px;color:var(--ldp-level-fg,#4a3515);
-      background:var(--ldp-level-bg,#f2cc73);
-      box-shadow:0 1px 0 rgba(74,47,32,.08);
-      font-size:11px;font-weight:800;line-height:1.2;letter-spacing:.02em;white-space:nowrap;}
-    .ldp-topic-level::before{content:"";width:4px;height:4px;margin-right:4px;border-radius:50%;
-      background:currentColor;opacity:.58;}
     .ldp-meta{font-size:12px;opacity:.7;margin-top:4px;}
     .ldp-head-btns{display:flex;gap:8px;align-items:center;}
     .ldp-close{cursor:pointer;border:none;background:transparent;font-size:22px;
@@ -215,7 +205,6 @@
       .ldp-header{gap:6px;}
       .ldp-title-lockup{gap:7px;}
       .ldp-title{font-size:16px;}
-      .ldp-topic-level{width:42px;min-width:42px;padding-left:4px;padding-right:4px;}
     }
 
     /* 楼主帖自身的点赞/回复按钮已挪到底部操作栏，这里隐藏原位置 */
@@ -488,6 +477,7 @@
       box-shadow:0 24px 70px rgba(15,23,18,.32);}
     .ldp-v2 .ldp-header{display:block;flex:none;padding:12px 16px 10px;background:var(--secondary,#fff);}
     .ldp-v2 .ldp-header-line{display:flex;align-items:flex-start;gap:11px;min-width:0;}
+    .ldp-v2 .ldp-header-close{flex:none;margin-left:auto;}
     .ldp-site-mark{width:34px;height:34px;flex:none;border-radius:7px;object-fit:cover;background:#1f8f58;}
     .ldp-v2 .ldp-title-lockup{align-items:center;gap:8px;}
     .ldp-v2 .ldp-title{font-size:17px;line-height:1.35;letter-spacing:0;}
@@ -495,7 +485,6 @@
     .ldp-topic-taxonomy{display:flex;gap:5px;flex-wrap:wrap;}
     .ldp-topic-chip{display:inline-flex;align-items:center;min-height:20px;padding:1px 6px;border:1px solid var(--primary-low,#dfe4e1);
       border-radius:4px;background:var(--primary-very-low,#f5f7f6);font-size:11px;line-height:1.3;color:var(--primary-medium,#5f6963);}
-    .ldp-v2 .ldp-topic-level{width:auto;min-width:38px;min-height:20px;border-radius:4px;padding:1px 6px;box-shadow:none;}
     .ldp-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;padding-top:8px;
       border-top:1px solid var(--primary-low,#e5e9e7);}
     .ldp-toolbar-group{display:flex;align-items:center;gap:5px;min-width:0;}
@@ -510,6 +499,7 @@
     .ldp-toolbtn svg,.ldp-v2 .ldp-close svg{width:16px;height:16px;fill:currentColor;}
     .ldp-tool-separator{width:1px;height:22px;margin:0 2px;background:var(--primary-low,#dfe4e1);}
     .ldp-v2 .ldp-head-btns{gap:5px;}
+    .ldp-v2 .ldp-settings-host{display:inline-flex;flex:none;}
     .ldp-v2 .ldp-close{font-size:0;}
     .ldp-v2 .ldp-shell{background:var(--secondary,#fff);}
     .ldp-v2 .ldp-shell-host{display:flex;flex:1;min-height:0;}
@@ -1865,82 +1855,6 @@
     } catch (error) {
       return '未分类';
     }
-  }
-
-  function topicLevelNumber(value) {
-    const text = String(value || '');
-    const lvMatch = text.match(/(?:^|[\s,，/_-])lv\s*-?(\d+)(?=$|[\s,，/_-])/i);
-    if (lvMatch) return Number(lvMatch[1]);
-    const cnMatch = text.match(/(?:^|\D)(\d+)\s*级用户/);
-    return cnMatch ? Number(cnMatch[1]) : null;
-  }
-
-  const TOPIC_LEVEL_PALETTE = {
-    1: { background: '#F2CC73', foreground: '#4A3515', border: '#D6AA45' },
-    2: { background: '#E9AB68', foreground: '#4A2D16', border: '#D48743' },
-    3: { background: '#D8A078', foreground: '#4A2F20', border: '#C47B52' },
-  };
-
-  function topicLevelPalette(level) {
-    return TOPIC_LEVEL_PALETTE[level] || {
-      background: '#D8B27A', foreground: '#4A351D', border: '#C4965A',
-    };
-  }
-
-  async function getTopicLevelInfo(topic, signal) {
-    const directCategory = topic && topic.category && typeof topic.category === 'object'
-      ? topic.category : null;
-    const directName = String((directCategory && directCategory.name)
-      || (topic && topic.category_name) || '').trim();
-    const directSlug = String((directCategory && directCategory.slug)
-      || (topic && topic.category_slug) || '').trim();
-    let category = directCategory;
-    let level = topicLevelNumber(`${directName} ${directSlug}`);
-
-    if (level === null && topic && topic.category_id) {
-      try {
-        if (!CATEGORY_SITE_CACHE) {
-          CATEGORY_SITE_CACHE = await fetchJSON(`${BASE}/site.json`, {
-            cache: 'force-cache', signal,
-          });
-        }
-        const categories = CATEGORY_SITE_CACHE.categories || [];
-        category = categories.find((item) => Number(item.id) === Number(topic.category_id)) || category;
-        level = topicLevelNumber([
-          category && category.name,
-          category && category.slug,
-          category && (category.description_text || category.description),
-        ].filter(Boolean).join(' '));
-      } catch (error) {
-        if (error && error.name === 'AbortError') throw error;
-      }
-    }
-
-    if (level === null || !Number.isFinite(level)) return null;
-    const categoryName = String((category && category.name) || directName || '').trim();
-    const palette = topicLevelPalette(level);
-    return {
-      label: `Lv${level}`,
-      title: categoryName ? `帖子等级：Lv${level} · ${categoryName}` : `帖子等级：Lv${level}`,
-      background: palette.background,
-      foreground: palette.foreground,
-      border: palette.border,
-    };
-  }
-
-  async function renderTopicLevel(topic, root, signal) {
-    const context = root.querySelector('.ldp-title-context');
-    const badge = root.querySelector('.ldp-topic-level');
-    if (!context || !badge) return;
-    const info = await getTopicLevelInfo(topic, signal);
-    if (!info || !badge.isConnected) return;
-    badge.textContent = info.label;
-    badge.title = info.title;
-    badge.setAttribute('aria-label', info.title);
-    badge.style.setProperty('--ldp-level-bg', info.background);
-    badge.style.setProperty('--ldp-level-fg', info.foreground);
-    badge.style.setProperty('--ldp-level-border', info.border);
-    context.hidden = false;
   }
 
   async function loadObsidianTopic(topicId, suppliedTopic) {
@@ -4521,8 +4435,6 @@
     history: readerIcon('<path d="M12 2a10 10 0 1 1-8.4 4.58L2 5v5h5L5.05 8.05A7.5 7.5 0 1 0 12 4.5V2Zm-1 5h2v5.4l3.4 2-1 1.72L11 13.5V7Z"/>'),
     collection: readerIcon('<path d="M4 4h6a3 3 0 0 1 2 1.05A3 3 0 0 1 14 4h6a2 2 0 0 1 2 2v13a1 1 0 0 1-1 1h-7a2 2 0 0 0-2 2 2 2 0 0 0-2-2H3a1 1 0 0 1-1-1V6a2 2 0 0 1 2-2Zm0 2v12h6a4 4 0 0 1 1 .13V7a1 1 0 0 0-1-1H4Zm10 0a1 1 0 0 0-1 1v11.13a4 4 0 0 1 1-.13h6V6h-6Z"/>'),
     bookmark: readerIcon(ICONS.bookmark),
-    previous: readerIcon('<path d="m15.5 5-7 7 7 7 1.5-1.5-5.5-5.5L17 6.5 15.5 5Z"/>'),
-    next: readerIcon('<path d="m8.5 5 7 7-7 7L7 17.5l5.5-5.5L7 6.5 8.5 5Z"/>'),
     filter: readerIcon('<path d="M4 5h16v2H4V5Zm3 6h10v2H7v-2Zm3 6h4v2h-4v-2Z"/>'),
     refresh: readerIcon('<path d="M17.65 6.35A8 8 0 1 0 20 12h-2.5a5.5 5.5 0 1 1-1.46-3.73L13 11h7V4l-2.35 2.35Z"/>'),
     close: readerIcon('<path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4 6.4 5Z"/>'),
@@ -4729,15 +4641,13 @@
       <header class="ldp-header">
         <div class="ldp-header-line">
           <img class="ldp-site-mark" src="${escAttr(document.querySelector('link[rel="icon"]')?.href || 'https://cdn3.ldstatic.com/optimized/4X/6/a/6/6a6affc7b1ce8140279e959d32671304db06d5ab_2_180x180.png')}" alt="">
-          <div class="ldp-header-main"><div class="ldp-title-lockup"><div class="ldp-title-context" hidden><span class="ldp-topic-level"></span></div>
+          <div class="ldp-header-main"><div class="ldp-title-lockup">
             <div class="ldp-title-copy"><h2 class="ldp-title" id="ldp-reader-title"><span class="ldp-sk ldp-sk-title"></span></h2>
               <div class="ldp-meta"><span class="ldp-sk ldp-sk-meta"></span><span class="ldp-topic-taxonomy"></span></div></div></div></div>
+          <button class="ldp-close ldp-header-close" title="关闭" aria-label="关闭">${READER_ICONS.close}</button>
         </div>
         <div class="ldp-toolbar">
           <div class="ldp-toolbar-group">
-            <button class="ldp-toolbtn" data-reader-action="previous" title="上一个历史主题">${READER_ICONS.previous}</button>
-            <button class="ldp-toolbtn" data-reader-action="next" title="下一个历史主题">${READER_ICONS.next}</button>
-            <span class="ldp-tool-separator"></span>
             <button class="ldp-toolbtn" data-reader-action="only-op" title="只看楼主">${READER_ICONS.filter}</button>
           </div>
           <div class="ldp-head-btns">
@@ -4747,8 +4657,7 @@
             <span class="ldp-obsidian-host"></span>
             <button class="ldp-toolbtn ldp-topic-bookmark" data-reader-action="topic-bookmark" title="收藏本帖">${READER_ICONS.bookmark}</button>
             <button class="ldp-toolbtn" data-reader-action="refresh" title="清除当前主题缓存并刷新">${READER_ICONS.refresh}</button>
-            <a class="ldp-toolbtn ldp-f-open" href="#" target="_blank" rel="noopener" title="打开原帖">${readerIcon(ICONS.newTab)}</a>
-            <button class="ldp-close" title="关闭" aria-label="关闭">${READER_ICONS.close}</button>
+            <span class="ldp-settings-host"></span>
           </div>
         </div>
       </header><div class="ldp-shell-host"></div>
@@ -4765,7 +4674,7 @@
     const app = {
       overlay, modal, topicId: null, targetPostNumber: 1, topic: null, loader: null,
       controller: null, virtualFlow: null, tracker: null, timeline: null, stopBase64: null,
-      repliesIO: null, refreshTimer: null, panelAbort: null, historyNavigation: null, onlyOp: false, closed: false,
+      repliesIO: null, refreshTimer: null, panelAbort: null, onlyOp: false, closed: false,
       loadTopic: null, close: null,
     };
 
@@ -4800,29 +4709,12 @@
     overlay.addEventListener('click', (event) => { if (event.target === overlay) app.close(); });
     modal.querySelector('.ldp-close').addEventListener('click', app.close);
 
-    const navigateHistory = (delta) => {
-      if (!app.historyNavigation) {
-        const entries = getHistoryEntries();
-        app.historyNavigation = {
-          entries,
-          index: entries.findIndex((item) => String(item.topicId) === String(app.topicId)),
-        };
-      }
-      const nextIndex = app.historyNavigation.index + delta;
-      const target = app.historyNavigation.entries[nextIndex];
-      if (!target) return;
-      app.historyNavigation.index = nextIndex;
-      app.loadTopic(target.topicId, target.lastPostNumber, { historyNavigation: true });
-    };
-
     modal.querySelector('.ldp-toolbar').addEventListener('click', async (event) => {
       const button = event.target.closest('[data-reader-action]');
       if (!button) return;
       const action = button.dataset.readerAction;
       if (action === 'history') showHistoryPanel(app);
       else if (action === 'collections') showCollectionPanel(app);
-      else if (action === 'previous') navigateHistory(1);
-      else if (action === 'next') navigateHistory(-1);
       else if (action === 'only-op' && app.virtualFlow) {
         button.disabled = true;
         app.onlyOp = !app.onlyOp;
@@ -4842,12 +4734,10 @@
 
     app.loadTopic = async (topicId, targetPostNumber, options) => {
       cleanupTopic(); closeReaderPanel(app); closeUserCard();
-      if (!(options && options.historyNavigation)) app.historyNavigation = null;
       app.topicId = String(topicId); app.targetPostNumber = Number(targetPostNumber) || 0; app.onlyOp = false;
       modal.querySelector('[data-reader-action="only-op"]').classList.remove('active');
       modal.querySelector('.ldp-title').innerHTML = '<span class="ldp-sk ldp-sk-title"></span>';
       modal.querySelector('.ldp-meta').innerHTML = '<span class="ldp-sk ldp-sk-meta"></span><span class="ldp-topic-taxonomy"></span>';
-      modal.querySelector('.ldp-title-context').hidden = true;
       modal.querySelector('.ldp-new-posts').hidden = true;
       modal.querySelectorAll('.ldp-f-open').forEach((link) => { link.href = `${BASE}/t/${topicId}`; });
       modal.querySelector('.ldp-footer').hidden = true;
@@ -4911,13 +4801,15 @@
           topicEl.appendChild(opNode); tracker.observe(opNode);
         }
         const obsidianHost = modal.querySelector('.ldp-obsidian-host');
-        obsidianHost.replaceChildren(createObsidianActionGroup(topicId, () => app.topic));
+        const obsidianActions = createObsidianActionGroup(topicId, () => app.topic);
+        const settingsButton = obsidianActions.querySelector('.ldp-obsidian-settings');
+        obsidianHost.replaceChildren(obsidianActions);
+        modal.querySelector('.ldp-settings-host').replaceChildren(settingsButton);
         const oldBookmark = modal.querySelector('[data-reader-action="topic-bookmark"]');
         const bookmark = oldBookmark.cloneNode(true); oldBookmark.replaceWith(bookmark);
         const oldFooter = modal.querySelector('.ldp-footer');
         const footer = oldFooter.cloneNode(true); oldFooter.replaceWith(footer);
         bindBookmarks([bookmark, footer.querySelector('.ldp-f-bookmark')], topic);
-        renderTopicLevel(topic, modal, controller.signal).catch(() => {});
         app.stopBase64 = bindModalBase64Selection(shell);
         bindActions(shell, ctx);
         if (opNode) bindReaderFooter(footer, ctx, topic, opNode);

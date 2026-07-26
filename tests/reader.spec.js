@@ -236,9 +236,16 @@ test('keeps original topic actions in the footer and groups collection tools on 
   await bootReader(page, { target: 12 });
   await expect(page.locator('.ldp-footer')).toBeVisible();
   await expect(page.locator('.ldp-footer .ldp-fbtn')).toHaveCount(5);
+  await expect(page.locator('[data-reader-action="previous"], [data-reader-action="next"]')).toHaveCount(0);
   await expect(page.locator('.ldp-toolbar-group [data-reader-action="history"]')).toHaveCount(0);
   await expect(page.locator('.ldp-head-btns [data-reader-action="history"]')).toHaveCount(1);
   await expect(page.locator('.ldp-head-btns [data-reader-action="collections"]')).toHaveCount(1);
+  await expect(page.locator('.ldp-header-line > .ldp-close')).toHaveCount(1);
+  await expect(page.locator('.ldp-head-btns .ldp-close')).toHaveCount(0);
+  await expect(page.locator('.ldp-head-btns .ldp-f-open')).toHaveCount(0);
+  await expect(page.locator('.ldp-footer .ldp-f-open')).toHaveCount(1);
+  await expect(page.locator('.ldp-head-btns > :last-child .ldp-obsidian-settings')).toHaveCount(1);
+  await expect(page.locator('.ldp-topic-level')).toHaveCount(0);
   await expect(page.locator('.ldp-topic > .ldp-post > .ldp-actions')).toBeHidden();
   await page.locator('.ldp-f-like').click();
   await expect(page.locator('.ldp-f-like')).toHaveClass(/liked/);
