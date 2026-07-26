@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      1.1.24
+// @version      2.0.0
 // @license      MIT
-// @description  在 LINUX DO 与 IDC Flare 弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读上报和 Obsidian 首帖快照。
+// @description  在 LINUX DO 与 IDC Flare 高性能浮窗阅读帖子，支持虚拟楼层、历史收藏、互动、用户卡片和 Obsidian 快照。
 // @author       Fashion
 // @match        https://linux.do/*
 // @match        https://idcflare.com/*
@@ -21,11 +21,13 @@
   'use strict';
 
   const BASE = location.origin;
-  const PAGE_SIZE = 20;
-  const MAX_RENDERED_POSTS = 80;
+  const PAGE_SIZE = 40;
+  const MAX_RENDERED_POSTS = 72;
   const READ_THRESHOLD = 1500;
   const FLUSH_INTERVAL = 5000;
   let ME_USERNAME = null;
+  let ME_USER = null;
+  let ME_STATE = 'unknown';
 
   // --- 楼中楼分批加载配置 ---
   const SUB_REPLY_INITIAL_SIZE = 3;   // 楼中楼默认展示条数
@@ -33,16 +35,33 @@
   const REPLIES_HOVER_DELAY = 400;    // 楼层在视口停留超过此时长才触发抓取(ms)
 
   // --- 全局只读请求队列 & HTTP 429 退避重试 ---
-  const REQUEST_MIN_INTERVAL = 300;   // 相邻 GET 请求最小间隔(ms)
+  const REQUEST_MIN_INTERVAL = 100;   // 相邻 GET 请求最小间隔(ms)
+  const REQUEST_MAX_CONCURRENCY = 3;
   const RETRY_MAX_ATTEMPTS = 3;       // 429 最多重试次数（不含首次请求）
   const RETRY_BASE_DELAY = 500;       // 无 Retry-After 时的指数退避基础延迟(ms)
   const SLICE_RADIUS = 20;            // 定位楼层前后各预加载的窗口半径
+  const TOPIC_CACHE_FRESH_MS = 90 * 1000;
+  const TOPIC_CACHE_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+  const TOPIC_CACHE_MAX_COUNT = 50;
+  const TOPIC_CACHE_MAX_BYTES = 25 * 1024 * 1024;
+  const HISTORY_KEY = 'ldp-reader-history-v1';
+  const DB_NAME = 'linuxdo-convenience-reader-v1';
+  const DB_VERSION = 1;
+  const REQUEST_PRIORITY = { target: 0, visible: 1, background: 2 };
   let lastRequestTime = 0;
-  let requestQueueTail = Promise.resolve();
+  let requestSequence = 0;
+  let activeGetRequests = 0;
+  let globalCooldownUntil = 0;
+  let requestPumpTimer = null;
+  const requestQueue = [];
+  const inflightGetRequests = new Map();
+  const cooldownChannel = typeof BroadcastChannel === 'function'
+    ? new BroadcastChannel('ldp-reader-request-cooldown-v1') : null;
 
   const MENU_PANEL_SEL = '.menu-panel, .user-menu, .quick-access-panel, .notifications';
   const SEARCH_SEL = '.search-results, .fps-result, .search-menu, .search-menu-container, .search-result-topic';
   const USER_CARD_CACHE = new Map();
+  let REACTIONS_AVAILABLE = null;
   let CURRENT_USER_CARD = null;
 
   /* ============ 1. 样式 ============ */
@@ -90,7 +109,7 @@
     .ldp-obsidian-save:disabled,.ldp-obsidian-copy:disabled,.ldp-obsidian-settings:disabled{cursor:wait;opacity:.62;}
     .ldp-obsidian-save:focus-visible,.ldp-obsidian-copy:focus-visible,.ldp-obsidian-settings:focus-visible,
     .ldp-obsidian-dialog button:focus-visible,.ldp-obsidian-dialog input:focus-visible,
-    .ldp-obsidian-dialog select:focus-visible{outline:2px solid #8b5cf6;outline-offset:2px;}
+    .ldp-obsidian-dialog select:focus-visible{outline:2px solid #2f855a;outline-offset:2px;}
     .ldp-obsidian-page-actions{width:max-content;margin:8px 0 8px auto;}
     .ldp-obsidian-dialog-overlay{position:fixed;inset:0;z-index:2147483640;display:grid;
       place-items:center;padding:20px;background:rgba(10,12,18,.58);backdrop-filter:blur(3px);}
@@ -109,14 +128,14 @@
       padding:9px 10px;border:1px solid var(--primary-low-mid,#cfd4dc);border-radius:7px;
       color:var(--primary,#1f2937);background:var(--secondary,#fff);font:inherit;}
     .ldp-obsidian-dialog-help{margin:5px 0 0;color:var(--primary-medium,#667085);font-size:12px;}
-    .ldp-obsidian-dialog-note{margin:0 0 14px;padding:10px 12px;border-left:3px solid #8b5cf6;
-      border-radius:0 7px 7px 0;background:rgba(124,58,237,.08);font-size:12px;}
+    .ldp-obsidian-dialog-note{margin:0 0 14px;padding:10px 12px;border-left:3px solid #2f855a;
+      border-radius:0 7px 7px 0;background:rgba(47,133,90,.08);font-size:12px;}
     .ldp-obsidian-dialog-status{min-height:21px;margin-top:12px;color:var(--primary-medium,#667085);
       font-size:13px;}
     .ldp-obsidian-dialog-status[data-type="error"]{color:var(--danger,#b42318);}
     .ldp-obsidian-dialog-status[data-type="success"]{color:#15803d;}
     .ldp-obsidian-confirm-icon{display:grid;width:42px;height:42px;margin-bottom:14px;
-      place-items:center;border-radius:11px;color:#7c3aed;background:rgba(124,58,237,.11);
+      place-items:center;border-radius:11px;color:#26734d;background:rgba(47,133,90,.11);
       font-size:24px;font-weight:700;}
     .ldp-obsidian-confirm-copy{margin:8px 0 0;color:var(--primary-medium,#667085);}
     .ldp-obsidian-confirm-path{display:block;margin-top:14px;padding:9px 10px;overflow-wrap:anywhere;
@@ -126,8 +145,8 @@
     .ldp-obsidian-dialog-actions button,.ldp-obsidian-test{border:0;border-radius:7px;
       padding:8px 12px;cursor:pointer;font:inherit;font-size:13px;font-weight:600;line-height:1.2;}
     .ldp-obsidian-dialog button:disabled{cursor:wait;opacity:.62;}
-    .ldp-obsidian-primary{color:#fff;background:#7c3aed;}
-    .ldp-obsidian-primary:hover{background:#6d28d9;}
+    .ldp-obsidian-primary{color:#fff;background:#2f855a;}
+    .ldp-obsidian-primary:hover{background:#26734d;}
     .ldp-obsidian-secondary,.ldp-obsidian-test{color:var(--primary,#1f2937);
       background:var(--primary-low,#e9eaec);}
     .ldp-obsidian-test{margin-top:10px;}
@@ -197,23 +216,6 @@
       .ldp-title{font-size:16px;}
       .ldp-topic-level{width:42px;min-width:42px;padding-left:4px;padding-right:4px;}
     }
-
-    /* 底部悬浮操作栏 */
-    .ldp-footer{flex:none;display:flex;align-items:center;justify-content:space-around;
-      padding:12px 24px;border-top:1px solid var(--primary-low,#eee);
-      background:var(--secondary,#fff);}
-    .ldp-fbtn{background:transparent;border:none;cursor:pointer;display:flex;
-      align-items:center;gap:8px;font-size:.95rem;color:var(--primary-medium,#666);
-      padding:8px 16px;border-radius:6px;transition:all .2s ease;font-weight:600;
-      white-space:nowrap;text-decoration:none;}
-    .ldp-fbtn:hover{background:var(--primary-low,#f0f0f0);color:var(--tertiary,#3b82f6);}
-    .ldp-fbtn svg{width:18px;height:18px;fill:currentColor;flex:none;}
-    .ldp-fbtn:disabled{cursor:default;opacity:.5;pointer-events:none;}
-    .ldp-fbtn.loading{opacity:.6;pointer-events:none;}
-    .ldp-fbtn.liked{color:#e74c3c;}
-    .ldp-fbtn.liked svg{fill:#e74c3c;}
-    .ldp-fbtn.bookmarked{color:var(--tertiary,#3b82f6);}
-    .ldp-fbtn.bookmarked svg{fill:var(--tertiary,#3b82f6);}
 
     /* 楼主帖自身的点赞/回复按钮已挪到底部操作栏，这里隐藏原位置 */
     .ldp-topic > .ldp-post > .ldp-actions{display:none;}
@@ -477,6 +479,125 @@
     /* 操作栏里的火箭按钮 */
     .ldp-btn.ldp-boost-btn{font-size:12px;}
     .ldp-btn.ldp-boost-btn:disabled{opacity:.35;cursor:default;pointer-events:none;}
+
+    /* 2.0 阅读器：安静的论坛工作台，绿色只表达阅读关系和当前状态 */
+    .ldp-overlay.ldp-v2{padding:4vh 3vw;box-sizing:border-box;background:rgba(18,22,20,.58);backdrop-filter:blur(2px);}
+    .ldp-v2 .ldp-modal{position:relative;width:min(1080px,94vw);max-width:none;height:86vh;
+      border:1px solid var(--primary-low,#dfe4e1);border-radius:8px;background:var(--secondary,#fff);
+      box-shadow:0 24px 70px rgba(15,23,18,.32);}
+    .ldp-v2 .ldp-header{display:block;flex:none;padding:12px 16px 10px;background:var(--secondary,#fff);}
+    .ldp-v2 .ldp-header-line{display:flex;align-items:flex-start;gap:11px;min-width:0;}
+    .ldp-site-mark{width:34px;height:34px;flex:none;border-radius:7px;object-fit:cover;background:#1f8f58;}
+    .ldp-v2 .ldp-title-lockup{align-items:center;gap:8px;}
+    .ldp-v2 .ldp-title{font-size:17px;line-height:1.35;letter-spacing:0;}
+    .ldp-v2 .ldp-meta{display:flex;align-items:center;flex-wrap:wrap;gap:5px;margin-top:3px;color:var(--primary-medium,#66706a);opacity:1;}
+    .ldp-topic-taxonomy{display:flex;gap:5px;flex-wrap:wrap;}
+    .ldp-topic-chip{display:inline-flex;align-items:center;min-height:20px;padding:1px 6px;border:1px solid var(--primary-low,#dfe4e1);
+      border-radius:4px;background:var(--primary-very-low,#f5f7f6);font-size:11px;line-height:1.3;color:var(--primary-medium,#5f6963);}
+    .ldp-v2 .ldp-topic-level{width:auto;min-width:38px;min-height:20px;border-radius:4px;padding:1px 6px;box-shadow:none;}
+    .ldp-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;padding-top:8px;
+      border-top:1px solid var(--primary-low,#e5e9e7);}
+    .ldp-toolbar-group{display:flex;align-items:center;gap:5px;min-width:0;}
+    .ldp-toolbtn,.ldp-v2 .ldp-close,.ldp-v2 .ldp-obsidian-save,.ldp-v2 .ldp-obsidian-copy,.ldp-v2 .ldp-obsidian-settings{
+      display:inline-grid;place-items:center;box-sizing:border-box;width:32px;height:32px;padding:0;border:1px solid var(--primary-low,#dce2df);
+      border-radius:6px;color:var(--primary-medium,#5d6862);background:var(--primary-very-low,#f5f7f6);cursor:pointer;text-decoration:none;}
+    .ldp-toolbtn:hover,.ldp-v2 .ldp-close:hover,.ldp-v2 .ldp-obsidian-save:hover,.ldp-v2 .ldp-obsidian-copy:hover,
+    .ldp-v2 .ldp-obsidian-settings:hover{border-color:#85aa96;color:#176c43;background:#edf6f1;}
+    .ldp-toolbtn.active{border-color:#5f9f7d;color:#176c43;background:#e4f2ea;}
+    .ldp-toolbtn svg,.ldp-v2 .ldp-close svg{width:16px;height:16px;fill:currentColor;}
+    .ldp-tool-separator{width:1px;height:22px;margin:0 2px;background:var(--primary-low,#dfe4e1);}
+    .ldp-v2 .ldp-head-btns{gap:5px;}
+    .ldp-v2 .ldp-close{font-size:0;}
+    .ldp-v2 .ldp-shell{background:var(--secondary,#fff);}
+    .ldp-v2 .ldp-shell-host{display:flex;flex:1;min-height:0;}
+    .ldp-v2 .ldp-shell-host > .ldp-shell{flex:1;min-height:0;}
+    .ldp-v2 .ldp-body{padding:8px 22px 28px;scrollbar-width:thin;scrollbar-color:var(--primary-low-mid,#c6ccc9) transparent;}
+    .ldp-v2 .ldp-body::-webkit-scrollbar{width:7px;}
+    .ldp-v2 .ldp-body::-webkit-scrollbar-thumb{border-radius:7px;background:var(--primary-low-mid,#c6ccc9);}
+    .ldp-v2 .ldp-timeline{flex-basis:82px;border-left:1px solid var(--primary-low,#e6e9e7);padding-left:8px;padding-right:8px;}
+    .ldp-v2 .ldp-topic{padding:2px 0 8px;}
+    .ldp-v2 .ldp-topic > .ldp-post > .ldp-actions{display:flex;}
+    .ldp-v2 .ldp-comments-header{position:sticky;top:0;z-index:3;margin:4px -2px 0;padding:10px 2px 7px;
+      border-top:1px solid var(--primary-low,#dfe4e1);background:var(--secondary,#fff);font-size:13px;}
+    .ldp-v2 .ldp-comments-header::before{content:"";width:3px;height:14px;border-radius:2px;background:#3d8d65;}
+    .ldp-virtual-spacer{width:1px;pointer-events:none;}
+    .ldp-virtual-window{min-height:1px;}
+    .ldp-missing-post{min-height:56px;border-bottom:1px solid var(--primary-low,#e5e7e6);opacity:.35;}
+    .ldp-v2 .ldp-post{padding:12px 10px 11px;border-bottom:1px solid var(--primary-low,#e4e8e6);background:transparent;}
+    .ldp-v2 .ldp-virtual-window > .ldp-post:nth-child(even){background:var(--primary-very-low,#f7f8f7);}
+    .ldp-v2 .ldp-post-head{margin-bottom:7px;}
+    .ldp-v2 .ldp-avatar,.ldp-v2 .ldp-avatar-btn{width:30px;height:30px;}
+    .ldp-v2 .ldp-author{font-size:13px;}
+    .ldp-v2 .ldp-content{font-size:15px;line-height:1.7;}
+    .ldp-v2 .ldp-actions{gap:3px;margin-top:7px;}
+    .ldp-v2 .ldp-btn{min-width:27px;min-height:27px;border-radius:5px;}
+    .ldp-post-bookmark.bookmarked{color:#a46015;background:#fff4df;}
+    .ldp-reaction-btn.reacted{color:#176c43;background:#e7f3ec;}
+    .ldp-reaction-count{margin-left:4px;font-size:11px;font-variant-numeric:tabular-nums;}
+    .ldp-reply-summary{position:relative;}
+    .ldp-reply-summary::before{content:"";position:absolute;left:3px;top:9px;bottom:9px;width:2px;border-radius:2px;background:#79aa90;}
+    .ldp-reply-summary:not(.expanded) > .ldp-content{max-height:5.1em;overflow:hidden;mask-image:linear-gradient(#000 65%,transparent);}
+    .ldp-thread-toggle{margin:0 0 5px 31px;padding:0;border:0;color:#28724d;background:transparent;cursor:pointer;font-size:11px;}
+    .ldp-children{margin-left:31px;border-left:2px solid #74aa8c;}
+    .ldp-children > .ldp-post-copy{margin:0;padding-left:12px;background:var(--secondary,#fff);}
+    .ldp-reaction-picker{display:none;align-items:center;gap:4px;width:max-content;margin:5px 0 0 38px;padding:5px;
+      border:1px solid var(--primary-low,#dfe4e1);border-radius:6px;background:var(--secondary,#fff);box-shadow:0 8px 24px rgba(24,35,28,.14);}
+    .ldp-reaction-picker.open{display:flex;}
+    .ldp-reaction-picker button{width:30px;height:28px;border:0;border-radius:4px;background:transparent;cursor:pointer;}
+    .ldp-reaction-picker button:hover,.ldp-reaction-picker button.selected{background:#e7f3ec;}
+    .ldp-reader-panel{position:absolute;z-index:20;right:16px;top:88px;width:min(420px,calc(100% - 32px));height:min(560px,calc(100% - 108px));
+      display:flex;flex-direction:column;border:1px solid var(--primary-low,#dce2df);border-radius:8px;background:var(--secondary,#fff);
+      box-shadow:0 18px 48px rgba(20,30,24,.24);overflow:hidden;}
+    .ldp-panel-head{display:flex;align-items:center;gap:8px;padding:10px 11px;border-bottom:1px solid var(--primary-low,#e3e7e5);}
+    .ldp-panel-head strong{flex:1;font-size:14px;}
+    .ldp-panel-close{width:28px;height:28px;border:0;background:transparent;color:inherit;font-size:20px;cursor:pointer;}
+    .ldp-panel-search{margin:9px 11px 6px;padding:8px 9px;border:1px solid var(--primary-low-mid,#cbd2ce);border-radius:6px;
+      color:inherit;background:var(--secondary,#fff);font:inherit;}
+    .ldp-panel-tabs{display:flex;gap:2px;padding:0 11px 7px;border-bottom:1px solid var(--primary-low,#e4e8e6);}
+    .ldp-panel-tab{flex:1;padding:7px;border:0;border-radius:5px;background:transparent;color:var(--primary-medium,#657069);cursor:pointer;}
+    .ldp-panel-tab.active{color:#176c43;background:#e9f4ee;font-weight:700;}
+    .ldp-panel-list{flex:1;overflow:auto;padding:4px 0;}
+    .ldp-panel-item{display:grid;grid-template-columns:34px minmax(0,1fr) 28px;gap:9px;align-items:center;padding:9px 11px;border-bottom:1px solid var(--primary-low,#edf0ee);}
+    .ldp-panel-item:hover{background:var(--primary-very-low,#f6f8f7);}
+    .ldp-panel-avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;background:var(--primary-low,#e6e9e7);}
+    .ldp-panel-item-main{min-width:0;border:0;padding:0;text-align:left;color:inherit;background:transparent;cursor:pointer;}
+    .ldp-panel-item-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:650;}
+    .ldp-panel-item-meta{display:block;margin-top:2px;color:var(--primary-medium,#6b746f);font-size:11px;}
+    .ldp-panel-delete{width:28px;height:28px;border:0;border-radius:4px;color:var(--primary-medium,#6b746f);background:transparent;cursor:pointer;}
+    .ldp-panel-delete:hover{color:var(--danger,#b42318);background:var(--primary-very-low,#f4f5f4);}
+    .ldp-panel-empty,.ldp-panel-loading,.ldp-panel-error{padding:32px 18px;text-align:center;color:var(--primary-medium,#6b746f);font-size:13px;}
+    .ldp-panel-foot{display:flex;align-items:center;justify-content:space-between;padding:8px 11px;border-top:1px solid var(--primary-low,#e3e7e5);font-size:12px;}
+    .ldp-panel-foot button{padding:6px 8px;border:1px solid var(--primary-low,#dce2df);border-radius:5px;color:inherit;background:var(--primary-very-low,#f5f7f6);cursor:pointer;}
+    .ldp-new-posts{position:absolute;z-index:8;top:12px;left:50%;transform:translateX(-50%);padding:7px 11px;border:1px solid #70a889;
+      border-radius:6px;color:#155e3b;background:#e9f5ee;box-shadow:0 6px 18px rgba(30,90,57,.15);cursor:pointer;font-size:12px;}
+    .ldp-user-card.ldp-user-card-v2{width:min(420px,calc(100vw - 24px));overflow:hidden;}
+    .ldp-user-card.ldp-user-card-v2.has-cover{width:min(720px,calc(100vw - 24px));}
+    .ldp-user-card-v2 .ldp-user-card-layout{display:grid;grid-template-columns:minmax(310px,1fr) minmax(250px,.9fr);min-height:330px;}
+    .ldp-user-card-v2 .ldp-user-card-layout.ldp-user-card-no-cover{display:block;min-height:0;}
+    .ldp-user-card-v2 .ldp-user-card-layout.ldp-user-card-no-cover .ldp-user-card-cover{display:none;}
+    .ldp-user-card-v2 .ldp-user-card-cover{height:auto;min-height:330px;order:2;background-color:var(--primary-very-low,#eef1ef);background-size:cover;background-position:center;}
+    .ldp-user-card-v2 .ldp-user-card-body{order:1;padding:18px;}
+    .ldp-user-card-v2 .ldp-user-card-main{align-items:center;margin:0;}
+    .ldp-user-card-v2 .ldp-user-card-avatar{width:68px;height:68px;}
+    .ldp-user-card-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px;}
+    .ldp-user-card-actions a,.ldp-user-card-actions button,.ldp-user-notify{padding:7px 9px;border:1px solid var(--primary-low,#dce2df);border-radius:5px;
+      color:inherit;background:var(--primary-very-low,#f5f7f6);text-decoration:none;cursor:pointer;font-size:12px;}
+    .ldp-user-badges{display:flex;gap:5px;flex-wrap:wrap;margin-top:11px;}
+    .ldp-user-badge{padding:3px 6px;border-radius:4px;background:#fff1d6;color:#77511a;font-size:11px;}
+    @media (max-width:760px){
+      .ldp-overlay.ldp-v2{padding:8px;align-items:stretch;}
+      .ldp-v2 .ldp-modal{width:calc(100vw - 16px);height:calc(100vh - 16px);}
+      .ldp-v2 .ldp-header{padding:10px;}
+      .ldp-site-mark{width:30px;height:30px;}
+      .ldp-toolbar{overflow-x:auto;scrollbar-width:none;}
+      .ldp-v2 .ldp-body{padding:6px 70px 22px 12px;}
+      .ldp-v2 .ldp-timeline{right:6px;top:6px;bottom:6px;}
+      .ldp-v2 .ldp-tl-current strong{font-size:11px;white-space:nowrap;}
+      .ldp-v2 .ldp-time{display:none;}
+      .ldp-reader-panel{top:76px;right:8px;width:calc(100% - 16px);height:calc(100% - 88px);}
+      .ldp-user-card-v2 .ldp-user-card-layout{display:block;min-height:0;}
+      .ldp-user-card-v2 .ldp-user-card-cover{display:none;}
+    }
   `;
   document.head.appendChild(style);
 
@@ -569,53 +690,183 @@
     return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
   }
 
-  async function waitForRequestSlot(signal) {
-    const wait = REQUEST_MIN_INTERVAL - (Date.now() - lastRequestTime);
-    if (wait > 0) await sleep(wait, signal);
-    throwIfAborted(signal);
-    lastRequestTime = Date.now();
+  function setGlobalCooldown(until, broadcast) {
+    const next = Math.max(globalCooldownUntil, Number(until) || 0);
+    if (next === globalCooldownUntil) return;
+    globalCooldownUntil = next;
+    if (broadcast && cooldownChannel) cooldownChannel.postMessage({ until: next });
+    scheduleRequestPump(Math.max(0, next - Date.now()));
   }
 
-  function queueRequest(task, signal) {
-    const queued = requestQueueTail.then(async () => {
-      throwIfAborted(signal);
-      return task();
-    });
-    requestQueueTail = queued.catch(() => {});
-    if (!signal) return queued;
-
-    return new Promise((resolve, reject) => {
-      if (signal.aborted) { reject(abortError()); return; }
-      const onAbort = () => reject(abortError());
-      signal.addEventListener('abort', onAbort, { once: true });
-      queued.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  if (cooldownChannel) {
+    cooldownChannel.addEventListener('message', (event) => {
+      if (event.data && event.data.until) setGlobalCooldown(event.data.until, false);
     });
   }
 
-  async function fetchWithRetry(url, options) {
+  async function fetchOnce(url, options, attempt) {
     const opts = options || {};
     const signal = opts.signal;
     const headers = Object.assign({ 'Accept': 'application/json' }, opts.headers || {});
     const fetchOptions = Object.assign({}, opts, {
       method: 'GET', credentials: 'include', headers,
     });
+    delete fetchOptions.priority;
+    delete fetchOptions.dedupeKey;
 
-    for (let attempt = 0; ; attempt++) {
-      await waitForRequestSlot(signal);
-      const res = await fetch(url, fetchOptions);
-      if (res.ok) return res.json();
-      if (res.status !== 429 || attempt >= RETRY_MAX_ATTEMPTS) {
-        throw new Error('HTTP ' + res.status);
-      }
+    throwIfAborted(signal);
+    const res = await fetch(url, fetchOptions);
+    if (res.ok) return res.json();
+    const error = new Error('HTTP ' + res.status);
+    error.status = res.status;
+    error.url = String(url);
+    error.attempt = attempt;
+    if (res.status === 429) {
       const retryAfter = parseRetryAfter(res.headers.get('Retry-After'));
-      const delay = retryAfter === null ? RETRY_BASE_DELAY * Math.pow(2, attempt) : retryAfter;
-      await sleep(delay, signal);
+      error.retryDelay = retryAfter === null ? RETRY_BASE_DELAY * Math.pow(2, attempt) : retryAfter;
     }
+    throw error;
+  }
+
+  async function waitForGlobalCooldown(signal) {
+    while (globalCooldownUntil > Date.now()) {
+      await sleep(globalCooldownUntil - Date.now(), signal);
+    }
+  }
+
+  async function fetchWithRetry(url, options) {
+    const opts = options || {};
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await queueRequest(
+          () => fetchOnce(url, opts, attempt), opts.signal, opts.priority
+        );
+      } catch (error) {
+        if (!error || error.status !== 429 || attempt >= RETRY_MAX_ATTEMPTS) throw error;
+        setGlobalCooldown(Date.now() + Math.max(0, Number(error.retryDelay) || 0), true);
+        await waitForGlobalCooldown(opts.signal);
+      }
+    }
+  }
+
+  function scheduleRequestPump(delay) {
+    if (requestPumpTimer) clearTimeout(requestPumpTimer);
+    requestPumpTimer = setTimeout(() => {
+      requestPumpTimer = null;
+      pumpRequestQueue();
+    }, Math.max(0, Number(delay) || 0));
+  }
+
+  function pumpRequestQueue() {
+    if (activeGetRequests >= REQUEST_MAX_CONCURRENCY || !requestQueue.length) return;
+    const cooldownWait = globalCooldownUntil - Date.now();
+    const spacingWait = REQUEST_MIN_INTERVAL - (Date.now() - lastRequestTime);
+    const wait = Math.max(cooldownWait, spacingWait, 0);
+    if (wait > 0) {
+      scheduleRequestPump(wait);
+      return;
+    }
+
+    requestQueue.sort((a, b) => a.priority - b.priority || a.sequence - b.sequence);
+    const item = requestQueue.shift();
+    if (!item) return;
+    if (item.signal && item.signal.aborted) {
+      item.reject(abortError());
+      pumpRequestQueue();
+      return;
+    }
+    activeGetRequests += 1;
+    lastRequestTime = Date.now();
+    item.started = true;
+    item.task().then(item.resolve, item.reject).finally(() => {
+      activeGetRequests -= 1;
+      scheduleRequestPump(0);
+    });
+    if (activeGetRequests < REQUEST_MAX_CONCURRENCY) scheduleRequestPump(REQUEST_MIN_INTERVAL);
+  }
+
+  function queueRequest(task, signal, priority) {
+    return new Promise((resolve, reject) => {
+      const item = {
+        task, signal, resolve, reject, started: false,
+        priority: REQUEST_PRIORITY[priority] ?? REQUEST_PRIORITY.visible,
+        sequence: requestSequence++,
+      };
+      if (signal && signal.aborted) {
+        reject(abortError());
+        return;
+      }
+      const onAbort = () => {
+        if (item.started) return;
+        const index = requestQueue.indexOf(item);
+        if (index >= 0) requestQueue.splice(index, 1);
+        reject(abortError());
+      };
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+      const finish = (handler) => (value) => {
+        if (signal) signal.removeEventListener('abort', onAbort);
+        handler(value);
+      };
+      item.resolve = finish(resolve);
+      item.reject = finish(reject);
+      requestQueue.push(item);
+      pumpRequestQueue();
+    });
+  }
+
+  function createSharedGetRequest(key, url, options) {
+    const controller = new AbortController();
+    const record = { key, controller, subscribers: new Set(), settled: false };
+    const opts = Object.assign({}, options || {}, { signal: controller.signal });
+    record.promise = fetchWithRetry(url, opts).then(
+      (value) => {
+        record.settled = true;
+        record.subscribers.forEach((subscriber) => subscriber.resolve(value));
+      },
+      (error) => {
+        record.settled = true;
+        record.subscribers.forEach((subscriber) => subscriber.reject(error));
+      }
+    ).finally(() => {
+      record.subscribers.forEach((subscriber) => subscriber.cleanup());
+      record.subscribers.clear();
+      if (inflightGetRequests.get(key) === record) inflightGetRequests.delete(key);
+    });
+    inflightGetRequests.set(key, record);
+    return record;
+  }
+
+  function subscribeSharedGet(record, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) {
+        reject(abortError());
+        if (!record.subscribers.size && !record.settled) record.controller.abort();
+        return;
+      }
+      const subscriber = {
+        resolve, reject, signal, cleanup: () => {
+          if (signal) signal.removeEventListener('abort', onAbort);
+        },
+      };
+      const onAbort = () => {
+        if (!record.subscribers.delete(subscriber)) return;
+        subscriber.cleanup();
+        reject(abortError());
+        if (!record.subscribers.size && !record.settled) record.controller.abort();
+      };
+      if (signal) signal.addEventListener('abort', onAbort, { once: true });
+      record.subscribers.add(subscriber);
+    });
   }
 
   function fetchJSON(url, options) {
     const opts = options || {};
-    return queueRequest(() => fetchWithRetry(url, opts), opts.signal);
+    const key = opts.dedupeKey || String(url);
+    let record = inflightGetRequests.get(key);
+    if (!record || record.settled || record.controller.signal.aborted) {
+      record = createSharedGetRequest(key, url, opts);
+    }
+    return subscribeSharedGet(record, opts.signal);
   }
 
   async function apiSend(url, method, params, extraHeaders) {
@@ -635,25 +886,355 @@
       opt.body = new URLSearchParams(params).toString();
     }
     const res = await fetch(url, opt);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) {
+      const error = new Error('HTTP ' + res.status);
+      error.status = res.status;
+      throw error;
+    }
     return res.json().catch(() => ({}));
   }
 
   async function ensureMe(signal) {
-    if (ME_USERNAME !== null) return ME_USERNAME;
+    if (ME_STATE !== 'unknown') return ME_USERNAME || '';
     try {
       const s = await fetchJSON(`${BASE}/session/current.json`, { signal });
-      ME_USERNAME = (s.current_user && s.current_user.username) || '';
+      ME_USER = s && s.current_user ? s.current_user : null;
+      ME_USERNAME = (ME_USER && ME_USER.username) || '';
+      ME_STATE = ME_USER ? 'authenticated' : 'guest';
     } catch (e) {
       if (e && e.name === 'AbortError') throw e;
-      ME_USERNAME = '';
+      throw e;
     }
     return ME_USERNAME;
+  }
+
+  let readerDbPromise = null;
+  function openReaderDb() {
+    if (!('indexedDB' in window)) return Promise.resolve(null);
+    if (readerDbPromise) return readerDbPromise;
+    readerDbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('topics')) {
+          const store = db.createObjectStore('topics', { keyPath: 'key' });
+          store.createIndex('updatedAt', 'updatedAt');
+          store.createIndex('scope', 'scope');
+        }
+        if (!db.objectStoreNames.contains('collections')) {
+          const store = db.createObjectStore('collections', { keyPath: 'key' });
+          store.createIndex('updatedAt', 'updatedAt');
+          store.createIndex('scope', 'scope');
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('IndexedDB 初始化失败'));
+    }).catch(() => null);
+    return readerDbPromise;
+  }
+
+  function dbRequest(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('IndexedDB 操作失败'));
+    });
+  }
+
+  async function readerScope(signal) {
+    const username = await ensureMe(signal);
+    if (ME_STATE === 'unknown') throw new Error('用户身份尚未确认');
+    return `${BASE}|${username || 'guest'}`;
+  }
+
+  async function readDbRecord(storeName, key) {
+    const db = await openReaderDb();
+    if (!db) return null;
+    return dbRequest(db.transaction(storeName, 'readonly').objectStore(storeName).get(key)).catch(() => null);
+  }
+
+  async function writeDbRecord(storeName, value) {
+    const db = await openReaderDb();
+    if (!db) return;
+    await dbRequest(db.transaction(storeName, 'readwrite').objectStore(storeName).put(value)).catch(() => {});
+  }
+
+  async function deleteDbRecord(storeName, key) {
+    const db = await openReaderDb();
+    if (!db) return;
+    await dbRequest(db.transaction(storeName, 'readwrite').objectStore(storeName).delete(key)).catch(() => {});
+  }
+
+  async function topicCacheKey(topicId, signal) {
+    let scope;
+    try { scope = await readerScope(signal); }
+    catch (error) {
+      if (error && error.name === 'AbortError') throw error;
+      return null;
+    }
+    return { scope, key: `${scope}|topic|${topicId}` };
+  }
+
+  async function readTopicSnapshot(topicId, signal) {
+    const identity = await topicCacheKey(topicId, signal);
+    if (!identity) return null;
+    const record = await readDbRecord('topics', identity.key);
+    if (!record || Date.now() - record.updatedAt > TOPIC_CACHE_STALE_MS) return null;
+    return Object.assign({}, record, { fresh: Date.now() - record.updatedAt <= TOPIC_CACHE_FRESH_MS });
+  }
+
+  async function pruneTopicSnapshots(scope) {
+    const db = await openReaderDb();
+    if (!db) return;
+    const records = await dbRequest(db.transaction('topics', 'readonly').objectStore('topics').getAll()).catch(() => []);
+    const scoped = records.filter((item) => item.scope === scope)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    let bytes = 0;
+    const expiredKeys = [];
+    scoped.forEach((record, index) => {
+      bytes += Number(record.bytes) || 0;
+      if (index >= TOPIC_CACHE_MAX_COUNT || bytes > TOPIC_CACHE_MAX_BYTES) expiredKeys.push(record.key);
+    });
+    if (!expiredKeys.length) return;
+    const transaction = db.transaction('topics', 'readwrite');
+    const store = transaction.objectStore('topics');
+    expiredKeys.forEach((key) => store.delete(key));
+  }
+
+  async function writeTopicSnapshot(topicId, topic, posts, signal) {
+    const identity = await topicCacheKey(topicId, signal);
+    if (!identity) return;
+    const payload = { schemaVersion: 2, topic, posts: Array.from(posts || []) };
+    let bytes = 0;
+    try { bytes = new Blob([JSON.stringify(payload)]).size; } catch (error) { /* 忽略估算失败 */ }
+    await writeDbRecord('topics', {
+      key: identity.key, scope: identity.scope, topicId: String(topicId),
+      updatedAt: Date.now(), bytes, payload,
+    });
+    pruneTopicSnapshots(identity.scope).catch(() => {});
+  }
+
+  async function invalidateTopicSnapshot(topicId) {
+    const identity = await topicCacheKey(topicId);
+    if (!identity) return;
+    return deleteDbRecord('topics', identity.key);
+  }
+
+  let historyStoreMemory = null;
+  let historyWriteTimer = 0;
+  let historyDirty = false;
+  let lastRememberedHistoryKey = '';
+
+  function readHistoryStore() {
+    if (historyStoreMemory) return historyStoreMemory;
+    try {
+      const value = JSON.parse(localStorage.getItem(HISTORY_KEY) || '{}');
+      historyStoreMemory = value && typeof value === 'object' ? value : {};
+    } catch (error) { historyStoreMemory = {}; }
+    return historyStoreMemory;
+  }
+
+  function historyScope() {
+    if (ME_STATE === 'unknown') return null;
+    return `${BASE}|${ME_USERNAME || 'guest'}`;
+  }
+
+  function getHistoryEntries() {
+    const scope = historyScope();
+    if (!scope) return [];
+    const cutoff = Date.now() - 365 * 24 * 60 * 60 * 1000;
+    return (readHistoryStore()[scope] || [])
+      .filter((item) => item && item.lastViewedAt >= cutoff)
+      .sort((a, b) => b.lastViewedAt - a.lastViewedAt)
+      .slice(0, 500);
+  }
+
+  function flushHistoryEntries() {
+    if (historyWriteTimer) clearTimeout(historyWriteTimer);
+    historyWriteTimer = 0;
+    if (!historyDirty || !historyStoreMemory) return;
+    historyDirty = false;
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(historyStoreMemory)); } catch (error) { /* 配额不足时不阻断阅读 */ }
+  }
+
+  function saveHistoryEntries(entries, immediate) {
+    const scope = historyScope();
+    if (!scope) return;
+    const store = readHistoryStore();
+    store[scope] = entries.slice(0, 500);
+    historyDirty = true;
+    if (immediate) flushHistoryEntries();
+    else {
+      if (historyWriteTimer) clearTimeout(historyWriteTimer);
+      historyWriteTimer = setTimeout(flushHistoryEntries, 750);
+    }
+  }
+
+  function rememberTopicHistory(topic, postNumber) {
+    if (!topic || !topic.id || ME_STATE === 'unknown') return;
+    const normalizedPostNumber = Math.max(1, Number(postNumber) || 1);
+    const memoryKey = `${historyScope()}|${topic.id}|${normalizedPostNumber}`;
+    if (memoryKey === lastRememberedHistoryKey) return;
+    lastRememberedHistoryKey = memoryKey;
+    const entries = getHistoryEntries().filter((item) => String(item.topicId) !== String(topic.id));
+    const op = topic._opPost || {};
+    entries.unshift({
+      topicId: String(topic.id), title: topic.title || `主题 ${topic.id}`,
+      username: topic._opUsername || op.username || '', avatar: resolveAvatar(op.avatar_template, 48),
+      lastViewedAt: Date.now(), lastPostNumber: normalizedPostNumber,
+      lastReadPostNumber: Number(topic.last_read_post_number) || 0,
+    });
+    saveHistoryEntries(entries);
+  }
+
+  async function collectionCacheIdentity(name, signal) {
+    let scope;
+    try { scope = await readerScope(signal); }
+    catch (error) {
+      if (error && error.name === 'AbortError') throw error;
+      return null;
+    }
+    return { scope, key: `${scope}|collection|${name}` };
+  }
+
+  async function readCollectionCache(name, maxAge, signal) {
+    const identity = await collectionCacheIdentity(name, signal);
+    if (!identity) return null;
+    const record = await readDbRecord('collections', identity.key);
+    if (!record || Date.now() - record.updatedAt > (maxAge || TOPIC_CACHE_FRESH_MS)) return null;
+    return record.payload;
+  }
+
+  async function writeCollectionCache(name, payload, signal) {
+    const identity = await collectionCacheIdentity(name, signal);
+    if (!identity) return;
+    return writeDbRecord('collections', {
+      key: identity.key, scope: identity.scope, name, updatedAt: Date.now(), payload,
+    });
+  }
+
+  async function invalidateCollectionCache(name) {
+    const identity = await collectionCacheIdentity(name);
+    if (!identity) return;
+    return deleteDbRecord('collections', identity.key);
+  }
+
+  window.addEventListener('pagehide', flushHistoryEntries);
+
+  async function loadBookmarksCollection(signal) {
+    const cached = await readCollectionCache('bookmarks', TOPIC_CACHE_FRESH_MS, signal);
+    if (cached) return cached;
+    const username = await ensureMe(signal);
+    if (!username) return [];
+    const items = [];
+    const seenIds = new Set();
+    const seenUrls = new Set();
+    let page = 0;
+    let nextUrl = `${BASE}/u/${encodeURIComponent(username)}/bookmarks.json?page=0`;
+    while (nextUrl && !seenUrls.has(nextUrl)) {
+      seenUrls.add(nextUrl);
+      const data = await fetchJSON(nextUrl, {
+        signal, priority: page === 0 ? 'visible' : 'background',
+      });
+      const root = data.user_bookmark_list || data;
+      const batch = root.bookmarks || data.bookmarks || [];
+      let added = 0;
+      batch.forEach((item) => {
+        const key = String(item.id || item.bookmark_id);
+        if (!seenIds.has(key)) { seenIds.add(key); items.push(item); added += 1; }
+      });
+      page += 1;
+      nextUrl = root.more_bookmarks_url
+        ? new URL(root.more_bookmarks_url, BASE).href
+        : (batch.length >= 20 && added ? `${BASE}/u/${encodeURIComponent(username)}/bookmarks.json?page=${page}` : '');
+    }
+    await writeCollectionCache('bookmarks', items, signal);
+    return items;
+  }
+
+  async function loadResponsesCollection(signal) {
+    const cached = await readCollectionCache('responses', TOPIC_CACHE_FRESH_MS, signal);
+    if (cached) return cached;
+    const username = await ensureMe(signal);
+    if (!username) return [];
+    const likesPromise = (async () => {
+      const items = [], seen = new Set();
+      let offset = 0;
+      while (true) {
+        const data = await fetchJSON(`${BASE}/user_actions.json?username=${encodeURIComponent(username)}&filter=1&offset=${offset}&limit=60`, {
+          signal, priority: offset ? 'background' : 'visible',
+        });
+        const batch = data.user_actions || [];
+        let added = 0;
+        batch.forEach((item) => {
+          const key = String(item.id || item.post_id);
+          if (!seen.has(key)) { seen.add(key); items.push(Object.assign({ _reactionType: 'like' }, item)); added += 1; }
+        });
+        if (batch.length < 60 || !added) break;
+        offset += batch.length;
+      }
+      return items;
+    })();
+    const reactionsPromise = (async () => {
+      const items = [], seenRecords = new Set(), seenCursors = new Set();
+      let cursor = 0;
+      while (true) {
+        const suffix = cursor ? `&before_reaction_user_id=${cursor}` : '';
+        const data = await fetchJSON(`${BASE}/discourse-reactions/posts/reactions.json?username=${encodeURIComponent(username)}${suffix}`, {
+          signal, priority: cursor ? 'background' : 'visible',
+        });
+        REACTIONS_AVAILABLE = true;
+        const batch = data.reactions || data.post_reactions || [];
+        let nextCursor = 0;
+        batch.forEach((item) => {
+          const id = Number(item.id) || 0;
+          if (id && (!nextCursor || id < nextCursor)) nextCursor = id;
+          const key = String(item.id || `${item.post_id}:${item.reaction_value || ''}`);
+          if (!seenRecords.has(key)) { seenRecords.add(key); items.push(Object.assign({ _reactionType: 'reaction' }, item)); }
+        });
+        if (!batch.length || !nextCursor || seenCursors.has(nextCursor)) break;
+        seenCursors.add(nextCursor); cursor = nextCursor;
+      }
+      return items;
+    })().catch((error) => {
+      if (error && error.name === 'AbortError') throw error;
+      if (error && error.status === 404) {
+        REACTIONS_AVAILABLE = false;
+        document.querySelectorAll('.ldp-v2 .ldp-reaction-btn,.ldp-v2 .ldp-reaction-picker').forEach((node) => node.remove());
+      }
+      return [];
+    });
+    const items = (await Promise.all([likesPromise, reactionsPromise])).flat()
+      .sort((a, b) => Date.parse(b.created_at || b.acted_at || 0) - Date.parse(a.created_at || a.acted_at || 0));
+    await writeCollectionCache('responses', items, signal);
+    return items;
+  }
+
+  function collectionItemTarget(item) {
+    const topicId = item.topic_id || (item.topic && item.topic.id) || item.bookmarkable_id;
+    const postNumber = item.post_number || (item.post && item.post.post_number) || 1;
+    return { topicId: topicId && String(topicId), postNumber: Number(postNumber) || 1 };
   }
 
   function likeInfo(p) {
     const like = (p.actions_summary || []).find((a) => a.id === 2) || {};
     return { count: like.count || 0, acted: !!like.acted, canAct: !!like.can_act };
+  }
+
+  const REACTION_LABELS = {
+    heart: '❤', '+1': '👍', laughing: '😄', tada: '🎉',
+    open_mouth: '😮', cry: '😢', angry: '😠', confused: '😕',
+    rocket: '🚀', eyes: '👀', fire: '🔥', clap: '👏', thinking: '🤔',
+  };
+
+  function reactionLabel(id) {
+    return REACTION_LABELS[String(id || '')] || `:${String(id || '')}:`;
+  }
+
+  function validReactionIds(topic, post) {
+    const source = topic && Array.isArray(topic.valid_reactions) ? topic.valid_reactions
+      : (post && Array.isArray(post.reactions) ? post.reactions.map((item) => item.id) : []);
+    return source.map((item) => String(typeof item === 'string' ? item : (item && (item.id || item.name)) || ''))
+      .filter(Boolean);
   }
 
   function parseTopicHref(href) {
@@ -1633,74 +2214,96 @@
     return [level !== null ? `Lv${level}` : '', label].filter(Boolean).join(' · ');
   }
 
-  function renderUserCard(user, username) {
+  function renderUserCardV2(user, summaryData, badgeData, username, loading) {
+    const summary = (summaryData && (summaryData.user_summary || summaryData.summary)) || summaryData || {};
+    const badges = (badgeData && badgeData.user_badges) || [];
     const profileUsername = user.username || username;
-    const avatar = resolveAvatar(user.avatar_template, 160);
+    const avatar = user._instantAvatar || resolveAvatar(user.avatar_template, 160);
     const cover = absoluteUrl(user.card_background_upload_url || user.profile_background_upload_url || '');
     const name = user.name || profileUsername;
-    const title = user.title || user.primary_group_name || '';
     const bio = stripHtml(user.bio_excerpt || user.bio_cooked || user.bio_raw || '');
+    const trust = userTrustLevelText(user);
     const website = user.website || user.website_name || '';
     const websiteUrl = website && (/^https?:\/\//i.test(website) ? website : `https://${website}`);
-    const locationText = user.location || (user.custom_fields && user.custom_fields.location) || '';
-    const trustLevelText = userTrustLevelText(user);
-    const summary = user.summary || {};
+    const canFollow = ME_STATE === 'authenticated' && profileUsername !== ME_USERNAME && user.can_follow !== false;
+    const badgeHtml = badges.slice(0, 6).map((entry) => {
+      const badge = entry.badge || entry;
+      return `<span class="ldp-user-badge" title="${escAttr(badge.description || '')}">${esc(badge.name || '徽章')}</span>`;
+    }).join('');
     const statsHtml = [
-      userCardStat('帖子', user.post_count ?? summary.post_count),
-      userCardStat('主题', user.topic_count ?? summary.topic_count),
-      userCardStat('获赞', user.likes_received ?? summary.likes_received),
+      userCardStat('帖子', summary.post_count ?? user.post_count),
+      userCardStat('主题', summary.topic_count ?? user.topic_count),
+      userCardStat('获赞', summary.likes_received ?? user.likes_received),
     ].filter(Boolean).join('');
-    const meta = [
-      title ? `<div>头衔：${esc(title)}</div>` : '',
-      locationText ? `<div>位置：${esc(locationText)}</div>` : '',
-      website ? `<div>网站：<a href="${escAttr(websiteUrl)}" target="_blank" rel="noopener">${esc(website.replace(/^https?:\/\//i, ''))}</a></div>` : '',
-      user.created_at ? `<div>加入：${esc(fmtTime(user.created_at))}</div>` : '',
-    ].filter(Boolean).join('');
-
-    return `
-      <div class="ldp-user-card-cover"${cover ? ` style="background-image:linear-gradient(135deg,rgba(255,255,255,.55),rgba(255,255,255,.82)),url('${escAttr(cover)}')"` : ''}></div>
+    return `<div class="ldp-user-card-layout${cover ? '' : ' ldp-user-card-no-cover'}">
       <div class="ldp-user-card-body">
         <div class="ldp-user-card-main">
-          <button type="button" class="ldp-user-card-avatar" title="打开用户主页" aria-label="打开 ${escAttr(profileUsername)} 的用户主页" data-profile-username="${escAttr(profileUsername)}">
+          <button type="button" class="ldp-user-card-avatar" data-profile-username="${escAttr(profileUsername)}" title="打开用户主页">
             ${avatar ? `<img src="${escAttr(avatar)}" alt="">` : ''}
           </button>
           <div class="ldp-user-card-name">
-            <strong>${esc(name)}</strong>
-            <span>@${esc(profileUsername)}</span>
-            ${trustLevelText ? `<span class="ldp-user-level" title="信任级别">${esc(trustLevelText)}</span>` : ''}
+            <strong>${esc(name)}</strong><span>@${esc(profileUsername)}</span>
+            ${trust ? `<span class="ldp-user-level">${esc(trust)}</span>` : ''}
           </div>
         </div>
-        ${bio ? `<div class="ldp-user-card-bio">${esc(bio.slice(0, 140))}${bio.length > 140 ? '…' : ''}</div>` : ''}
-        ${meta ? `<div class="ldp-user-card-meta">${meta}</div>` : ''}
+        ${bio ? `<div class="ldp-user-card-bio">${esc(bio.slice(0, 180))}${bio.length > 180 ? '…' : ''}</div>` : ''}
+        <div class="ldp-user-card-meta">
+          ${user.title ? `<div>头衔：${esc(user.title)}</div>` : ''}
+          ${user.location ? `<div>位置：${esc(user.location)}</div>` : ''}
+          ${website ? `<div>网站：<a href="${escAttr(websiteUrl)}" target="_blank" rel="noopener">${esc(website.replace(/^https?:\/\//i, ''))}</a></div>` : ''}
+          ${user.created_at ? `<div>加入：${esc(fmtTime(user.created_at))}</div>` : ''}
+          ${loading ? '<div class="ldp-user-card-phase">正在补充资料与统计…</div>' : ''}
+        </div>
         ${statsHtml ? `<div class="ldp-user-card-stats">${statsHtml}</div>` : ''}
-      </div>`;
+        ${badgeHtml ? `<div class="ldp-user-badges">${badgeHtml}</div>` : ''}
+        <div class="ldp-user-card-actions">
+          <a href="${escAttr(userProfileUrl(profileUsername))}" target="_blank" rel="noopener">主页</a>
+          ${ME_STATE === 'authenticated' && profileUsername !== ME_USERNAME ? `<a href="${BASE}/new-message?username=${encodeURIComponent(profileUsername)}" target="_blank" rel="noopener">私信</a>` : ''}
+          ${canFollow ? `<button type="button" data-user-action="follow">${user.is_followed ? '取消关注' : '关注'}</button>` : ''}
+          ${ME_STATE === 'authenticated' && ME_USER && ME_USER.id && profileUsername !== ME_USERNAME ? `<select class="ldp-user-notify" data-user-action="notify" aria-label="通知设置">
+            <option value="normal"${!user.muted && !user.ignored ? ' selected' : ''}>常规</option>
+            <option value="mute"${user.muted ? ' selected' : ''}>免打扰</option>
+            <option value="ignore"${user.ignored ? ' selected' : ''}>忽略 30 天</option>
+          </select>` : ''}
+          <a href="${BASE}/u/${encodeURIComponent(profileUsername)}/badges" target="_blank" rel="noopener">徽章</a>
+        </div>
+      </div>
+      <div class="ldp-user-card-cover"${cover ? ` style="background-image:url('${escAttr(cover)}')"` : ''}></div>
+    </div>`;
   }
 
-  async function openUserCard(username, anchor) {
+  async function openUserCardV2(username, anchor) {
     if (!username || !anchor) return;
     closeUserCard();
     const card = document.createElement('div');
-    card.className = 'ldp-user-card';
+    card.className = 'ldp-user-card ldp-user-card-v2';
     card.setAttribute('role', 'dialog');
     card.setAttribute('aria-label', `${username} 的个人详情`);
-    card.innerHTML = `<div class="ldp-user-card-loading">正在加载 @${esc(username)} 的个人详情…</div>`;
+    const instantAvatar = (anchor.querySelector('img') || {}).src || '';
+    let user = { username, _instantAvatar: instantAvatar };
+    let summary = null;
+    let badges = null;
+    card.innerHTML = renderUserCardV2(user, summary, badges, username, true);
     document.body.appendChild(card);
     positionUserCard(card, anchor);
 
-    const closeOnOutside = (e) => {
-      if (card.contains(e.target) || anchor.contains(e.target)) return;
-      closeUserCard();
+    const closeOnOutside = (event) => {
+      if (!card.contains(event.target) && !anchor.contains(event.target)) closeUserCard();
     };
-    const closeOnEsc = (e) => { if (e.key === 'Escape') closeUserCard(); };
+    const closeOnEsc = (event) => { if (event.key === 'Escape') closeUserCard(); };
     const reposition = () => positionUserCard(card, anchor);
+    let outsideTimer = 0;
     const cleanup = () => {
+      if (outsideTimer) clearTimeout(outsideTimer);
+      outsideTimer = 0;
       document.removeEventListener('click', closeOnOutside, true);
       document.removeEventListener('keydown', closeOnEsc);
       window.removeEventListener('resize', reposition);
       window.removeEventListener('scroll', reposition, true);
     };
     CURRENT_USER_CARD = { el: card, cleanup };
-    setTimeout(() => {
+    outsideTimer = setTimeout(() => {
+      outsideTimer = 0;
       if (CURRENT_USER_CARD && CURRENT_USER_CARD.el === card) {
         document.addEventListener('click', closeOnOutside, true);
       }
@@ -1709,30 +2312,54 @@
     window.addEventListener('resize', reposition);
     window.addEventListener('scroll', reposition, true);
 
-    card.addEventListener('click', (e) => {
-      const avatarBtn = e.target.closest('.ldp-user-card-avatar');
-      if (!avatarBtn) return;
-      e.preventDefault();
-      e.stopPropagation();
-      openUserProfile(avatarBtn.dataset.profileUsername || username);
-      closeUserCard();
+    const render = (loading) => {
+      if (!CURRENT_USER_CARD || CURRENT_USER_CARD.el !== card) return;
+      card.classList.toggle('has-cover', !!(user.card_background_upload_url || user.profile_background_upload_url));
+      card.innerHTML = renderUserCardV2(user, summary, badges, username, loading);
+      positionUserCard(card, anchor);
+    };
+
+    card.addEventListener('click', async (event) => {
+      const avatarButton = event.target.closest('.ldp-user-card-avatar');
+      if (avatarButton) {
+        openUserProfile(username);
+        closeUserCard();
+        return;
+      }
+      const follow = event.target.closest('[data-user-action="follow"]');
+      if (!follow) return;
+      follow.disabled = true;
+      try {
+        await apiSend(`${BASE}/follow/${encodeURIComponent(username)}.json`, user.is_followed ? 'DELETE' : 'PUT');
+        user.is_followed = !user.is_followed;
+        render(false);
+      } catch (error) { alert('关注操作失败：' + error.message); }
+      finally { if (follow.isConnected) follow.disabled = false; }
+    });
+    card.addEventListener('change', async (event) => {
+      const select = event.target.closest('[data-user-action="notify"]');
+      if (!select) return;
+      select.disabled = true;
+      const level = select.value;
+      const params = { notification_level: level, acting_user_id: (ME_USER && ME_USER.id) || '' };
+      if (level === 'ignore') params.expiring_at = new Date(Date.now() + 30 * 86400000).toISOString();
+      try {
+        await apiSend(`${BASE}/u/${encodeURIComponent(username)}/notification_level.json`, 'PUT', params);
+        user.muted = level === 'mute'; user.ignored = level === 'ignore';
+      } catch (error) { alert('通知设置失败：' + error.message); }
+      finally { select.disabled = false; }
     });
 
-    try {
-      let data = USER_CARD_CACHE.get(username);
-      if (!data) {
-        data = await fetchJSON(`${BASE}/u/${encodeURIComponent(username)}/card.json`);
-        USER_CARD_CACHE.set(username, data);
-      }
-      if (!CURRENT_USER_CARD || CURRENT_USER_CARD.el !== card) return;
-      const user = data.user || data;
-      card.innerHTML = renderUserCard(user, username);
-      positionUserCard(card, anchor);
-    } catch (err) {
-      if (!CURRENT_USER_CARD || CURRENT_USER_CARD.el !== card) return;
-      card.innerHTML = `<div class="ldp-user-card-error">个人详情加载失败：${esc(err.message)}</div>`;
-      positionUserCard(card, anchor);
-    }
+    const encoded = encodeURIComponent(username);
+    const profilePromise = fetchJSON(`${BASE}/u/${encoded}.json`, { priority: 'target' })
+      .then((data) => { user = Object.assign(user, data.user || data); USER_CARD_CACHE.set(username, user); render(true); })
+      .catch(() => {});
+    const summaryPromise = fetchJSON(`${BASE}/u/${encoded}/summary.json`, { priority: 'visible' })
+      .then((data) => { summary = data; render(true); }).catch(() => {});
+    const badgesPromise = fetchJSON(`${BASE}/user-badges/${encoded}.json`, { priority: 'background' })
+      .then((data) => { badges = data; render(true); }).catch(() => {});
+    await Promise.allSettled([profilePromise, summaryPromise, badgesPromise]);
+    render(false);
   }
 
   function isElement(node) {
@@ -2237,318 +2864,6 @@
     };
   }
 
-  /* ============ 5. 加载器 ============ */
-  function createLoader(topicId, signal) {
-    let stream = [];
-    let streamIndex = new Map();
-    const cache = new Map();
-    let topic = null;
-    let upCursor = 0;
-    let downCursor = 0;
-    let topReached = false;
-    let bottomReached = false;
-
-    async function fetchSlice(ids, requestSignal) {
-      const missing = ids.filter((id) => !cache.has(id));
-      if (!missing.length) return;
-      const qs = missing.map((id) => `post_ids[]=${id}`).join('&');
-      const part = await fetchJSON(`${BASE}/t/${topicId}/posts.json?${qs}`, {
-        signal: requestSignal || signal,
-      });
-      ((part.post_stream && part.post_stream.posts) || []).forEach((p) => cache.set(p.id, p));
-    }
-
-    async function init() {
-      const topicPromise = fetchJSON(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`, {
-        cache: 'no-store',
-        headers: {
-          'Accept': 'application/json, text/javascript, */*; q=0.01',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Discourse-Present': 'true',
-          'Discourse-Track-View': 'true',
-          'Discourse-Track-View-Topic-Id': String(topicId),
-        },
-        signal,
-      });
-      const mePromise = ensureMe(signal).catch(() => {});
-      const data = await topicPromise;
-      await mePromise;
-      topic = data;
-      const initialPosts = (data.post_stream && data.post_stream.posts) || [];
-      initialPosts.forEach((p) => cache.set(p.id, p));
-      stream = ((data.post_stream && data.post_stream.stream) || []).filter((id) => {
-        const post = cache.get(id);
-        return !(post && post.post_number === 1);
-      });
-      streamIndex = new Map(stream.map((id, index) => [String(id), index]));
-      const op = (topic.details && topic.details.created_by && topic.details.created_by.username)
-          || (initialPosts.find((p) => p.post_number === 1) || {}).username
-          || null;
-      topic._opUsername = op;
-      topic._opPost = initialPosts.find((p) => p.post_number === 1) || null;
-      return topic;
-    }
-
-    function nearestPost(posts, requestedPostNumber) {
-      const sorted = posts.slice().sort((a, b) => a.post_number - b.post_number);
-      return sorted.find((p) => p.post_number === requestedPostNumber)
-          || sorted.find((p) => p.post_number > requestedPostNumber)
-          || sorted[sorted.length - 1]
-          || null;
-    }
-
-    function windowBounds(targetIndex) {
-      if (!stream.length) return { start: 0, end: 0, targetIndex: -1 };
-      const safeIndex = Math.max(0, Math.min(stream.length - 1, Number(targetIndex) || 0));
-      return {
-        start: Math.max(0, safeIndex - SLICE_RADIUS),
-        end: Math.min(stream.length, safeIndex + SLICE_RADIUS + 1),
-        targetIndex: safeIndex,
-      };
-    }
-
-    async function prepareWindowByIndex(targetIndex, requestSignal) {
-      const bounds = windowBounds(targetIndex);
-      const ids = stream.slice(bounds.start, bounds.end);
-      await fetchSlice(ids, requestSignal);
-      const target = bounds.targetIndex >= 0 ? cache.get(stream[bounds.targetIndex]) : null;
-      return Object.assign(bounds, {
-        posts: ids.map((id) => cache.get(id)).filter(Boolean),
-        targetPostNumber: target ? target.post_number : 1,
-      });
-    }
-
-    async function prepareWindowByPostNumber(targetPostNumber, requestSignal) {
-      if (!targetPostNumber || targetPostNumber <= 1 || !stream.length) {
-        const result = await prepareWindowByIndex(0, requestSignal);
-        result.targetPostNumber = 1;
-        return result;
-      }
-
-      let safeIdx = null;
-      let resolvedTarget = Number(targetPostNumber);
-      try {
-        const anchor = await fetchJSON(`${BASE}/t/${topicId}.json?post_number=${resolvedTarget}`, {
-          signal: requestSignal || signal,
-        });
-        const anchorPosts = (anchor.post_stream && anchor.post_stream.posts) || [];
-        anchorPosts.forEach((p) => cache.set(p.id, p));
-        const nearest = nearestPost(anchorPosts, resolvedTarget);
-        if (nearest) {
-          resolvedTarget = nearest.post_number;
-          const idx = streamIndex.get(String(nearest.id));
-          if (idx !== undefined) safeIdx = idx;
-        }
-      } catch (err) {
-        if (err && err.name === 'AbortError') throw err;
-      }
-
-      if (safeIdx === null) {
-        safeIdx = Math.min(Math.max(0, resolvedTarget - 2), Math.max(0, stream.length - 1));
-      }
-
-      const result = await prepareWindowByIndex(safeIdx, requestSignal);
-      const nearest = nearestPost(result.posts, resolvedTarget);
-      result.targetPostNumber = nearest ? nearest.post_number : resolvedTarget;
-      return result;
-    }
-
-    async function prepareDown(requestSignal) {
-      if (bottomReached) return { posts: [], done: true };
-      const start = downCursor;
-      const end = Math.min(stream.length, downCursor + PAGE_SIZE);
-      const ids = stream.slice(start, end);
-      await fetchSlice(ids, requestSignal);
-      return {
-        posts: ids.map((id) => cache.get(id)).filter(Boolean),
-        start,
-        end,
-        done: end >= stream.length,
-      };
-    }
-
-    async function prepareUp(requestSignal) {
-      if (topReached) return { posts: [], done: true };
-      const start = Math.max(0, upCursor - PAGE_SIZE);
-      const ids = stream.slice(start, upCursor);
-      await fetchSlice(ids, requestSignal);
-      return {
-        posts: ids.map((id) => cache.get(id)).filter(Boolean),
-        start,
-        end: upCursor,
-        done: start === 0,
-      };
-    }
-
-    function activateWindow(result) {
-      upCursor = result.start || 0;
-      downCursor = result.end || 0;
-      topReached = upCursor === 0;
-      bottomReached = downCursor >= stream.length;
-    }
-
-    function activateDown(result) {
-      downCursor = result.end;
-      bottomReached = !!result.done;
-    }
-
-    function activateUp(result) {
-      upCursor = result.start;
-      topReached = !!result.done;
-    }
-
-    function activateRange(start, end) {
-      upCursor = Math.max(0, Number(start) || 0);
-      downCursor = Math.max(upCursor, Math.min(stream.length, Number(end) || 0));
-      topReached = upCursor === 0;
-      bottomReached = downCursor >= stream.length;
-    }
-
-    return {
-      init, prepareWindowByIndex, prepareWindowByPostNumber, prepareDown, prepareUp,
-      activateWindow, activateDown, activateUp, activateRange,
-      get streamLength() { return stream.length; },
-      getStreamId(index) { return stream[index]; },
-      getStreamIndex(postId) {
-        const index = streamIndex.get(String(postId));
-        return index === undefined ? -1 : index;
-      },
-      getCachedByIndex(index) { return cache.get(stream[index]) || null; },
-      get topic() { return topic; },
-      get topReached() { return topReached; },
-      get bottomReached() { return bottomReached; },
-    };
-  }
-
-  /* ============ 6. 楼层归位 ============ */
-  function attachPost(p, ctx) {
-    if (p.post_number === 1) {
-      const node = renderPost(p, false, ctx);
-      ctx.topicEl.appendChild(node);
-      ctx.tracker.observe(node);
-      if (ctx.onPostsChanged) ctx.onPostsChanged();
-      return;
-    }
-    if (ctx.nodeMap.has(p.post_number)) return;
-
-    const parentNum = p.reply_to_post_number;
-    const node = renderPost(p, !!(parentNum && parentNum !== 1), ctx);
-    ctx.nodeMap.set(p.post_number, node);
-
-    const parentNode = parentNum && parentNum !== 1 ? ctx.nodeMap.get(parentNum) : null;
-    if (parentNum && parentNum !== 1 && !parentNode) {
-      ctx.pending.push({ num: p.post_number, parent: parentNum });
-      ctx.commentsEl.appendChild(node);
-    } else if (parentNode) {
-      parentNode.querySelector(':scope > .ldp-children').appendChild(node);
-    } else {
-      ctx.commentsEl.appendChild(node);
-    }
-    ctx.tracker.observe(node);
-    // 仅当该楼层确实存在回复时才纳入楼中楼观察队列（减少无意义的 IO 开销）
-    if (p.reply_count > 0) ctx.repliesIO.observe(node);
-    if (ctx.onPostsChanged) ctx.onPostsChanged();
-  }
-
-  function reflowPending(ctx) {
-    if (!ctx.pending.length) return;
-    const rest = [];
-    ctx.pending.forEach((it) => {
-      const child = ctx.nodeMap.get(it.num);
-      const parent = ctx.nodeMap.get(it.parent);
-      if (child && parent) {
-        parent.querySelector(':scope > .ldp-children').appendChild(child);
-      } else {
-        rest.push(it);
-      }
-    });
-    ctx.pending = rest;
-  }
-
-  function insertPostsBatch(posts, ctx, position) {
-    if (!posts || !posts.length) return 0;
-    const fragment = document.createDocumentFragment();
-    const tempCtx = Object.assign({}, ctx, { commentsEl: fragment, onPostsChanged: null });
-    posts.forEach((post) => attachPost(post, tempCtx));
-    reflowPending(tempCtx);
-    ctx.pending = tempCtx.pending;
-    if (position === 'prepend') ctx.commentsEl.prepend(fragment);
-    else ctx.commentsEl.appendChild(fragment);
-    return posts.length;
-  }
-
-  function reflowRenderedPosts(ctx) {
-    const nodes = Array.from(ctx.nodeMap.values())
-      .filter((node) => node && node.isConnected)
-      .sort((a, b) => (+a.dataset.postNumber || 0) - (+b.dataset.postNumber || 0));
-    const rootFragment = document.createDocumentFragment();
-    nodes.forEach((node) => {
-      const parentNumber = +node.dataset.replyToPostNumber || 0;
-      const parent = parentNumber > 1 ? ctx.nodeMap.get(parentNumber) : null;
-      if (parent && parent.isConnected) {
-        const children = parent.querySelector(':scope > .ldp-children');
-        if (children) children.appendChild(node);
-      } else {
-        rootFragment.appendChild(node);
-      }
-    });
-    ctx.commentsEl.appendChild(rootFragment);
-  }
-
-  function cleanupPostNode(node, ctx) {
-    if (!node) return;
-    const nodes = [node, ...node.querySelectorAll('.ldp-post[data-post-number]')];
-    nodes.forEach((item) => {
-      ctx.tracker.unobserve(item);
-      if (ctx.repliesIO && ctx.repliesIO.clearNode) ctx.repliesIO.clearNode(item);
-      ctx.subReplyState.delete(+item.dataset.postNumber);
-    });
-    node.remove();
-  }
-
-  function clearCommentsWindow(ctx) {
-    Array.from(ctx.commentsEl.querySelectorAll('.ldp-post[data-post-number]'))
-      .forEach((node) => {
-        ctx.tracker.unobserve(node);
-        if (ctx.repliesIO && ctx.repliesIO.clearNode) ctx.repliesIO.clearNode(node);
-      });
-    ctx.nodeMap.clear();
-    ctx.pending = [];
-    ctx.subReplyState.clear();
-    ctx.commentsEl.innerHTML = '<div class="ldp-comments-empty">暂无评论</div>';
-    ctx.emptyEl = ctx.commentsEl.querySelector('.ldp-comments-empty');
-    updateCommentsHeader(ctx);
-  }
-
-  function trimRenderedRange(ctx, loader, keepStart, keepEnd) {
-    const removed = [];
-    ctx.nodeMap.forEach((node, postNumber) => {
-      const index = loader.getStreamIndex(node.dataset.postId);
-      if (index >= keepStart && index < keepEnd) return;
-      ctx.nodeMap.delete(postNumber);
-      removed.push(node);
-    });
-    // 先把仍需保留的嵌套回复移出将删除的父节点，再清理旧节点。
-    reflowRenderedPosts(ctx);
-    removed.forEach((node) => cleanupPostNode(node, ctx));
-    ctx.pending = ctx.pending.filter((item) => ctx.nodeMap.has(item.num));
-    loader.activateRange(keepStart, keepEnd);
-  }
-
-  function captureScrollAnchor(scrollRoot) {
-    const rootRect = scrollRoot.getBoundingClientRect();
-    const posts = Array.from(scrollRoot.querySelectorAll('.ldp-post[data-post-number]'));
-    const node = posts.find((post) => post.getBoundingClientRect().bottom > rootRect.top + 1);
-    return node ? { node, offset: node.getBoundingClientRect().top - rootRect.top } : null;
-  }
-
-  async function restoreScrollAnchor(scrollRoot, anchor) {
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    if (!anchor || !anchor.node.isConnected) return;
-    const rootTop = scrollRoot.getBoundingClientRect().top;
-    scrollRoot.scrollTop += anchor.node.getBoundingClientRect().top - rootTop - anchor.offset;
-  }
-
   /* ============ 7. 渲染单条 ============ */
   function renderPost(p, isReply, ctx) {
     const avatar = resolveAvatar(p.avatar_template, 48);
@@ -2562,6 +2877,9 @@
     // Boosts 数据
     const boostsHtml = renderBoosts(p.boosts || []);
     const canBoost = p.can_boost === true;
+    const currentReaction = String((p.current_user_reaction && p.current_user_reaction.id) || '');
+    const reactionCount = (p.reactions || []).reduce((sum, item) => sum + Math.max(0, Number(item.count) || 0), 0);
+    const validReactions = validReactionIds(ctx.topic, p);
 
     const lastReadPostNumber = Math.max(1, Number(
       ctx.tracker && ctx.tracker.getReadWaterline ? ctx.tracker.getReadWaterline() : ctx.lastReadPostNumber
@@ -2603,6 +2921,13 @@
         <button class="ldp-btn ldp-replybtn" title="回复">
             <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.reply}</svg>
         </button>
+        ${REACTIONS_AVAILABLE !== false && (validReactions.length || reactionCount) ? `<button class="ldp-btn ldp-reaction-btn ${currentReaction ? 'reacted' : ''}"
+          data-current-reaction="${escAttr(currentReaction)}" data-valid-reactions="${escAttr(validReactions.join(','))}"
+          title="添加回应" aria-label="添加回应">${currentReaction ? reactionLabel(currentReaction) : '☺'}${reactionCount ? `<span class="ldp-reaction-count">${reactionCount}</span>` : ''}</button>` : ''}
+        <button class="ldp-btn ldp-post-bookmark ${p.bookmarked ? 'bookmarked' : ''}"
+          data-bookmark-id="${escAttr(String(p.bookmark_id || ''))}" title="收藏楼层" aria-label="收藏楼层">
+          <svg viewBox="0 0 24 24" style="width:13px;height:13px;fill:currentColor;vertical-align:middle;">${ICONS.bookmark}</svg>
+        </button>
         <button class="ldp-btn ldp-boost-btn" ${canBoost ? '' : 'disabled'} title="Boost">
           <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.boost}</svg>
         </button>
@@ -2624,6 +2949,31 @@
     });
     enhanceCodeBlocks(node);
     return node;
+  }
+
+  function syncRenderedPostState(root, post) {
+    if (!root || !post || !post.id) return;
+    const { count, acted } = likeInfo(post);
+    const currentReaction = String((post.current_user_reaction && post.current_user_reaction.id) || '');
+    const reactionCount = (post.reactions || []).reduce((sum, item) => sum + Math.max(0, Number(item.count) || 0), 0);
+    root.querySelectorAll(`.ldp-post[data-post-id="${CSS.escape(String(post.id))}"]`).forEach((node) => {
+      const like = node.querySelector(':scope > .ldp-actions .ldp-like');
+      if (like) {
+        like.classList.toggle('liked', acted); like.dataset.acted = acted ? '1' : '0';
+        const countNode = like.querySelector('.ldp-like-count'); if (countNode) countNode.textContent = String(count);
+      }
+      const bookmark = node.querySelector(':scope > .ldp-actions .ldp-post-bookmark');
+      if (bookmark) {
+        bookmark.classList.toggle('bookmarked', !!post.bookmarked);
+        bookmark.dataset.bookmarkId = String(post.bookmark_id || '');
+      }
+      const reaction = node.querySelector(':scope > .ldp-actions .ldp-reaction-btn');
+      if (reaction) {
+        reaction.classList.toggle('reacted', !!currentReaction);
+        reaction.dataset.currentReaction = currentReaction;
+        reaction.innerHTML = `${currentReaction ? reactionLabel(currentReaction) : '☺'}${reactionCount ? `<span class="ldp-reaction-count">${reactionCount}</span>` : ''}`;
+      }
+    });
   }
 
   /* ============ 8. 回复框 ============ */
@@ -2696,6 +3046,29 @@
   }
 
   /* ============ 9. 楼中楼分批渲染 ============ */
+  function renderSubReplyState(postNumber, ctx) {
+    const state = ctx.subReplyState.get(postNumber);
+    const parentNode = ctx.nodeMap.get(postNumber) || ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`);
+    if (!state || !parentNode) return;
+    const children = parentNode.querySelector(':scope > .ldp-children');
+    if (children) {
+      children.replaceChildren();
+      state.all.slice(0, state.renderedCount).forEach((reply) => {
+        const copy = renderPost(ctx.loader.getPostById(reply.id) || reply, true, ctx);
+        copy.classList.add('ldp-post-copy');
+        copy.setAttribute('aria-label', `#${reply.post_number} 的直属回复副本`);
+        children.appendChild(copy);
+      });
+    }
+    const actionEl = parentNode.querySelector(':scope > .ldp-sub-actions');
+    const btnEl = actionEl && actionEl.querySelector('.ldp-load-more-replies');
+    const remaining = state.all.length - state.renderedCount;
+    if (remaining > 0) {
+      if (actionEl) actionEl.style.display = 'block';
+      if (btnEl) btnEl.textContent = `展示更多回复（还剩 ${remaining} 条） ↓`;
+    } else if (actionEl) actionEl.style.display = 'none';
+  }
+
   function renderSubReplyBatch(postNumber, ctx) {
     const state = ctx.subReplyState.get(postNumber);
     const parentNode = ctx.nodeMap.get(postNumber) || (ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`));
@@ -2705,25 +3078,9 @@
     const limit = start === 0 ? SUB_REPLY_INITIAL_SIZE : SUB_REPLY_PAGE_SIZE;
     const batch = state.all.slice(start, start + limit);
 
-    const batchCtx = Object.assign({}, ctx, { onPostsChanged: null });
-    batch.forEach((rp) => {
-      if (!rp.reply_to_post_number) rp.reply_to_post_number = postNumber;
-      attachPost(rp, batchCtx);
-    });
     state.renderedCount += batch.length;
-    reflowPending(batchCtx);
-    ctx.pending = batchCtx.pending;
+    renderSubReplyState(postNumber, ctx);
     if (ctx.onPostsChanged) ctx.onPostsChanged();
-
-    const actionEl = parentNode.querySelector(':scope > .ldp-sub-actions');
-    const btnEl = actionEl && actionEl.querySelector('.ldp-load-more-replies');
-    const remaining = state.all.length - state.renderedCount;
-    if (remaining > 0) {
-      if (actionEl) actionEl.style.display = 'block';
-      if (btnEl) btnEl.textContent = `展示更多回复（还剩 ${remaining} 条） ↓`;
-    } else if (actionEl) {
-      actionEl.style.display = 'none';
-    }
   }
 
   /* ============ 10. 事件委托 ============ */
@@ -2745,7 +3102,15 @@
       if (avatarBtn) {
         e.preventDefault();
         e.stopPropagation();
-        openUserCard(avatarBtn.dataset.username, avatarBtn);
+        openUserCardV2(avatarBtn.dataset.username, avatarBtn);
+        return;
+      }
+
+      const threadToggle = e.target.closest('.ldp-thread-toggle');
+      if (threadToggle) {
+        const summary = threadToggle.closest('.ldp-reply-summary');
+        const expanded = summary.classList.toggle('expanded');
+        threadToggle.textContent = `${threadToggle.textContent.split('·')[0].trim()} · ${expanded ? '收起' : '展开'}`;
         return;
       }
 
@@ -2761,21 +3126,131 @@
       if (!postNode) return;
       const postId = postNode.dataset.postId, postNumber = +postNode.dataset.postNumber;
 
+      const syncCopies = (selector, update) => {
+        modal.querySelectorAll(`.ldp-post[data-post-id="${CSS.escape(String(postId))}"] ${selector}`)
+          .forEach(update);
+      };
+
       const likeBtn = e.target.closest('.ldp-like');
       if (likeBtn && !likeBtn.disabled) {
         const countEl = likeBtn.querySelector('.ldp-like-count'), acted = likeBtn.dataset.acted === '1';
         likeBtn.disabled = true;
         try {
+          let nextCount;
           if (!acted) {
             await apiSend(`${BASE}/post_actions`, 'POST', { id: postId, post_action_type_id: 2, flag_topic: false });
-            likeBtn.classList.add('liked'); likeBtn.dataset.acted = '1';
-            countEl.textContent = (+countEl.textContent) + 1;
+            nextCount = (+countEl.textContent) + 1;
+            syncCopies('.ldp-like', (button) => {
+              button.classList.add('liked'); button.dataset.acted = '1';
+              const count = button.querySelector('.ldp-like-count'); if (count) count.textContent = nextCount;
+            });
           } else {
             await apiSend(`${BASE}/post_actions/${postId}?post_action_type_id=2`, 'DELETE');
-            likeBtn.classList.remove('liked'); likeBtn.dataset.acted = '0';
-            countEl.textContent = Math.max(0, (+countEl.textContent) - 1);
+            nextCount = Math.max(0, (+countEl.textContent) - 1);
+            syncCopies('.ldp-like', (button) => {
+              button.classList.remove('liked'); button.dataset.acted = '0';
+              const count = button.querySelector('.ldp-like-count'); if (count) count.textContent = nextCount;
+            });
           }
+          if (ctx.loader) ctx.loader.updatePost(postId, (post) => {
+            const actions = Array.isArray(post.actions_summary) ? post.actions_summary.map((item) => Object.assign({}, item)) : [];
+            let like = actions.find((item) => Number(item.id) === 2);
+            if (!like) { like = { id: 2 }; actions.push(like); }
+            like.count = nextCount; like.acted = !acted;
+            post.actions_summary = actions;
+            return post;
+          });
+          invalidateCollectionCache('responses').catch(() => {});
+          invalidateTopicSnapshot(ctx.topicId).catch(() => {});
         } catch (err) { alert('操作失败：' + err.message); } finally { likeBtn.disabled = false; }
+        return;
+      }
+
+      const bookmarkBtn = e.target.closest('.ldp-post-bookmark');
+      if (bookmarkBtn && !bookmarkBtn.disabled) {
+        bookmarkBtn.disabled = true;
+        const bookmarkId = bookmarkBtn.dataset.bookmarkId;
+        try {
+          let nextId = '';
+          if (!bookmarkBtn.classList.contains('bookmarked')) {
+            const data = await apiSend(`${BASE}/bookmarks`, 'POST', {
+              bookmarkable_id: postId, bookmarkable_type: 'Post',
+            });
+            nextId = String((data && data.id) || '');
+          } else if (bookmarkId) {
+            await apiSend(`${BASE}/bookmarks/${bookmarkId}`, 'DELETE');
+          }
+          syncCopies('.ldp-post-bookmark', (button) => {
+            button.classList.toggle('bookmarked', !!nextId);
+            button.dataset.bookmarkId = nextId;
+          });
+          if (ctx.loader) ctx.loader.updatePost(postId, {
+            bookmarked: !!nextId, bookmark_id: nextId || null,
+          });
+          invalidateCollectionCache('bookmarks').catch(() => {});
+          invalidateTopicSnapshot(ctx.topicId).catch(() => {});
+        } catch (err) { alert('楼层收藏操作失败：' + err.message); }
+        finally { syncCopies('.ldp-post-bookmark', (button) => { button.disabled = false; }); }
+        return;
+      }
+
+      const reactionBtn = e.target.closest('.ldp-reaction-btn');
+      if (reactionBtn) {
+        let picker = postNode.querySelector(':scope > .ldp-reaction-picker');
+        if (!picker) {
+          const reactionIds = String(reactionBtn.dataset.validReactions || '').split(',').filter(Boolean);
+          if (!reactionIds.length) return;
+          picker = document.createElement('div');
+          picker.className = 'ldp-reaction-picker';
+          const current = reactionBtn.dataset.currentReaction || '';
+          picker.innerHTML = reactionIds.map((id) => `<button type="button" data-reaction-id="${escAttr(id)}"
+            class="${id === current ? 'selected' : ''}" title="${escAttr(id)}">${reactionLabel(id)}</button>`).join('');
+          postNode.querySelector(':scope > .ldp-actions').after(picker);
+        }
+        picker.classList.toggle('open');
+        return;
+      }
+
+      const reactionChoice = e.target.closest('.ldp-reaction-picker [data-reaction-id]');
+      if (reactionChoice) {
+        reactionChoice.disabled = true;
+        try {
+          const reactionId = reactionChoice.dataset.reactionId;
+          await apiSend(`${BASE}/discourse-reactions/posts/${postId}/custom-reactions/${encodeURIComponent(reactionId)}/toggle.json`, 'PUT');
+          const cachedPost = ctx.loader && ctx.loader.getPostById(postId);
+          const previous = String((cachedPost && cachedPost.current_user_reaction && cachedPost.current_user_reaction.id)
+            || postNode.querySelector('.ldp-reaction-btn').dataset.currentReaction || '');
+          const selected = previous !== reactionId;
+          if (ctx.loader) ctx.loader.updatePost(postId, (post) => {
+            const reactions = Array.isArray(post.reactions) ? post.reactions.map((item) => Object.assign({}, item)) : [];
+            const adjust = (id, delta) => {
+              if (!id) return;
+              let item = reactions.find((entry) => String(entry.id) === String(id));
+              if (!item && delta > 0) { item = { id, type: 'emoji', count: 0 }; reactions.push(item); }
+              if (item) item.count = Math.max(0, Number(item.count || 0) + delta);
+            };
+            if (previous) adjust(previous, -1);
+            if (selected) adjust(reactionId, 1);
+            post.reactions = reactions.filter((item) => Number(item.count) > 0);
+            post.current_user_reaction = selected ? { id: reactionId, type: 'emoji', can_undo: true } : null;
+            return post;
+          });
+          syncCopies('.ldp-reaction-btn', (button) => {
+            button.classList.toggle('reacted', selected);
+            button.dataset.currentReaction = selected ? reactionId : '';
+            button.textContent = selected ? reactionLabel(reactionId) : '☺';
+          });
+          invalidateCollectionCache('responses').catch(() => {});
+          invalidateTopicSnapshot(ctx.topicId).catch(() => {});
+        } catch (err) {
+          if (err && err.status === 404) {
+            REACTIONS_AVAILABLE = false;
+            modal.querySelectorAll('.ldp-reaction-btn,.ldp-reaction-picker').forEach((node) => node.remove());
+          } else {
+            alert('回应操作失败：' + err.message);
+          }
+        }
+        finally { reactionChoice.disabled = false; }
         return;
       }
 
@@ -2837,13 +3312,6 @@
             const btn = postNode.querySelector(':scope > .ldp-actions > .ldp-boost-btn');
             if (btn) btn.disabled = true;
 
-            if (postNumber === 1) {
-              const fBoost = ctx.scrollRoot.closest('.ldp-modal').querySelector('.ldp-f-boost');
-              if (fBoost) {
-                fBoost.disabled = true;
-                fBoost.style.opacity = '0.4';
-              }
-            }
           }
         } catch (err) { alert('发射失败：' + err.message); }
         finally { boostSubmit.disabled = false; }
@@ -2863,13 +3331,6 @@
           const btn = postNode.querySelector(':scope > .ldp-actions > .ldp-boost-btn');
           if (btn) btn.disabled = false;
 
-          if (postNumber === 1) {
-            const fBoost = ctx.scrollRoot.closest('.ldp-modal').querySelector('.ldp-f-boost');
-            if (fBoost) {
-              fBoost.disabled = false;
-              fBoost.style.opacity = '1';
-            }
-          }
         } catch (err) { alert('删除失败：' + err.message); }
         return;
       }
@@ -2898,6 +3359,17 @@
           const postData = data && data.post ? data.post : data;
 
           if (postData && postData.cooked) {
+            if (ctx.loader) {
+              if (!postData.reply_to_post_number) postData.reply_to_post_number = postNumber;
+              ctx.loader.mergePost(postData);
+              ctx.totalComments = (ctx.totalComments || 0) + 1;
+              updateCommentsHeader(ctx);
+              invalidateTopicSnapshot(ctx.topicId).catch(() => {});
+              if (ctx.onMutation) ctx.onMutation(postData);
+              box.classList.remove('open');
+              textarea.value = '';
+              return;
+            }
             const isTopLevel = postNumber === 1; // 回复楼主帖时按普通顶级评论处理，而非楼中楼
             const newNode = renderPost({
               id: postData.id,
@@ -2929,6 +3401,8 @@
             ctx.totalComments = (ctx.totalComments || 0) + 1;
             updateCommentsHeader(ctx);
             if (ctx.onPostsChanged) ctx.onPostsChanged();
+            invalidateTopicSnapshot(ctx.topicId).catch(() => {});
+            if (ctx.onMutation) ctx.onMutation(postData);
 
             const tip = box.querySelector('.ldp-reply-tip');
             if (tip) {
@@ -2963,9 +3437,14 @@
 
         if (en.isIntersecting) {
           const cachedReplies = ctx.subReplyCache.get(postId);
-          if (cachedReplies && !ctx.subReplyState.has(postNumber)) {
-            ctx.subReplyState.set(postNumber, { all: cachedReplies, renderedCount: 0 });
-            renderSubReplyBatch(postNumber, ctx);
+          if (cachedReplies) {
+            const existing = ctx.subReplyState.get(postNumber);
+            ctx.subReplyState.set(postNumber, {
+              all: cachedReplies,
+              renderedCount: Math.min(cachedReplies.length, existing ? existing.renderedCount : 0),
+            });
+            if (existing && existing.renderedCount) renderSubReplyState(postNumber, ctx);
+            else renderSubReplyBatch(postNumber, ctx);
             return;
           }
           if (fetched.has(postId) || hoverTimers.has(postId)) return;
@@ -2981,6 +3460,7 @@
               if (!en.target.isConnected || ctx.windowEpoch !== Number(en.target.dataset.windowEpoch)) return;
               if (loadingEl) loadingEl.style.display = 'none';
               if (!replies || !replies.length) return;
+              if (ctx.loader) replies.forEach((reply) => ctx.loader.mergePost(reply));
               ctx.subReplyCache.set(postId, replies);
               ctx.subReplyState.set(postNumber, { all: replies, renderedCount: 0 });
               renderSubReplyBatch(postNumber, ctx); // 首批只渲染 SUB_REPLY_INITIAL_SIZE 条
@@ -3034,33 +3514,11 @@
         } else if (bookmarkId) {
           await apiSend(`${BASE}/bookmarks/${bookmarkId}`, 'DELETE'); bookmarked = false; bookmarkId = null;
         } else { await apiSend(`${BASE}/t/${topic.id}/remove_bookmarks`, 'PUT'); bookmarked = false; }
+        topic.bookmarked = bookmarked; topic.bookmark_id = bookmarkId;
         sync();
+        invalidateCollectionCache('bookmarks').catch(() => {});
+        invalidateTopicSnapshot(topic.id).catch(() => {});
       } catch (err) { alert('收藏操作失败：' + err.message); } finally { btn.disabled = false; }
-    });
-  }
-
-  /* 底部悬浮操作栏的点赞按钮：对楼主帖（1 楼）执行点赞/取消点赞 */
-  function bindFooterLike(btn, countEl, opPost) {
-    if (!opPost) { btn.disabled = true; return; }
-    const { count, acted, canAct } = likeInfo(opPost);
-    let liked = acted;
-    countEl.textContent = count;
-    btn.classList.toggle('liked', liked);
-    btn.disabled = !(canAct || acted);
-    btn.addEventListener('click', async () => {
-      if (btn.disabled) return;
-      btn.disabled = true;
-      try {
-        if (!liked) {
-          await apiSend(`${BASE}/post_actions`, 'POST', { id: opPost.id, post_action_type_id: 2, flag_topic: false });
-          liked = true; btn.classList.add('liked');
-          countEl.textContent = (+countEl.textContent) + 1;
-        } else {
-          await apiSend(`${BASE}/post_actions/${opPost.id}?post_action_type_id=2`, 'DELETE');
-          liked = false; btn.classList.remove('liked');
-          countEl.textContent = Math.max(0, (+countEl.textContent) - 1);
-        }
-      } catch (err) { alert('操作失败：' + err.message); } finally { btn.disabled = false; }
     });
   }
 
@@ -3082,8 +3540,9 @@
     const track = rail.querySelector('.ldp-tl-track');
     const fill = rail.querySelector('.ldp-tl-fill');
     const thumb = rail.querySelector('.ldp-tl-thumb');
-    const totalPosts = Math.max(1, topic.highest_post_number || topic.posts_count || ctx.totalComments + 1);
-    const streamLength = controls.getStreamLength();
+    const getTotalPosts = () => Math.max(1, controls.getTotalPosts ? controls.getTotalPosts()
+      : (topic.highest_post_number || topic.posts_count || ctx.totalComments + 1));
+    const getStreamLength = () => Math.max(0, controls.getStreamLength());
     let raf = 0;
     let seeking = false;
     let cachedPosts = [];
@@ -3092,6 +3551,7 @@
     let lastRatio = -1;
     let lastPercent = -1;
     let lastPostNumber = -1;
+    let lastTotalPosts = -1;
     let lastDate = null;
     let lastSeeking = null;
     let seekToken = 0;
@@ -3100,7 +3560,7 @@
     topDateBtn.textContent = fmtDate(topic.created_at) || '顶部';
     bottomDateBtn.textContent = fmtDate(topic.last_posted_at || topic.bumped_at) || '底部';
     track.setAttribute('aria-valuemin', '1');
-    track.setAttribute('aria-valuemax', String(totalPosts));
+    track.setAttribute('aria-valuemax', String(getTotalPosts()));
 
     const visiblePost = () => {
       if (!cachedPosts.length) return null;
@@ -3120,6 +3580,9 @@
       const post = visiblePost();
       const postNumber = post ? (+post.dataset.postNumber || 1) : 1;
       const streamIndex = postNumber <= 1 ? -1 : controls.getStreamIndex(post.dataset.postId);
+      const streamLength = getStreamLength();
+      const totalPosts = getTotalPosts();
+      track.setAttribute('aria-valuemax', String(totalPosts));
       const ratio = streamLength
         ? Math.max(0, Math.min(1, (streamIndex + 1) / streamLength))
         : 0;
@@ -3134,9 +3597,10 @@
         lastPercent = percent;
       }
 
-      if (postNumber !== lastPostNumber) {
+      if (postNumber !== lastPostNumber || totalPosts !== lastTotalPosts) {
         currentText.textContent = `${postNumber} / ${totalPosts}`;
         lastPostNumber = postNumber;
+        lastTotalPosts = totalPosts;
       }
       const date = seeking ? '正在定位…' : (post ? (fmtDate(post.dataset.createdAt) || '当前') : '当前');
       if (date !== lastDate) {
@@ -3178,9 +3642,10 @@
     };
 
     const jumpTop = () => seek(0, 1);
-    const jumpBottom = () => seek(Math.max(0, streamLength - 1));
+    const jumpBottom = () => seek(Math.max(0, getStreamLength() - 1));
     const jumpByRatio = (ratio) => {
       const safeRatio = Math.max(0, Math.min(1, ratio));
+      const streamLength = getStreamLength();
       if (!streamLength || safeRatio <= 0) return jumpTop();
       const index = Math.max(0, Math.min(streamLength - 1, Math.round(safeRatio * streamLength) - 1));
       return seek(index);
@@ -3194,8 +3659,8 @@
     const onTrackKeydown = (e) => {
       if (e.key === 'Home') { e.preventDefault(); jumpTop(); }
       else if (e.key === 'End') { e.preventDefault(); jumpBottom(); }
-      else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); jumpByRatio((lastRatio < 0 ? 0 : lastRatio) - 1 / Math.max(1, streamLength)); }
-      else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); jumpByRatio((lastRatio < 0 ? 0 : lastRatio) + 1 / Math.max(1, streamLength)); }
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); jumpByRatio((lastRatio < 0 ? 0 : lastRatio) - 1 / Math.max(1, getStreamLength())); }
+      else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); jumpByRatio((lastRatio < 0 ? 0 : lastRatio) + 1 / Math.max(1, getStreamLength())); }
       else if (e.key === 'PageUp') { e.preventDefault(); body.scrollBy({ top: -body.clientHeight * 0.8, behavior: 'smooth' }); }
       else if (e.key === 'PageDown') { e.preventDefault(); body.scrollBy({ top: body.clientHeight * 0.8, behavior: 'smooth' }); }
     };
@@ -3306,472 +3771,1047 @@
     return true;
   }
 
+  /* ============ 13. 2.0 加载器与虚拟楼层流 ============ */
+  function createLoaderV2(topicId, signal) {
+    let topic = null;
+    let stream = [];
+    let streamIndex = new Map();
+    const cache = new Map();
+    const streamListeners = new Set();
+    const postListeners = new Set();
+    let prefetchedAnchor = null;
+    let refreshPromise = null;
+    let streamRevision = 0;
+    let snapshotTimer = 0;
+    let snapshotMaxTimer = 0;
+    let snapshotDirty = false;
+    let snapshotSuspended = 0;
+    let snapshotWriting = false;
+
+    const emitPosts = (posts) => {
+      const changed = (posts || []).filter(Boolean);
+      if (!changed.length) return;
+      postListeners.forEach((listener) => listener(changed));
+    };
+
+    const replaceStream = (nextStream) => {
+      const seen = new Set();
+      const normalized = (nextStream || []).map(Number).filter((id) => id > 0 && !seen.has(id) && seen.add(id));
+      const unchanged = normalized.length === stream.length && normalized.every((id, index) => id === stream[index]);
+      if (unchanged) return false;
+      stream = normalized;
+      streamIndex = new Map(stream.map((id, index) => [String(id), index]));
+      streamRevision += 1;
+      streamListeners.forEach((listener) => listener(stream.slice(), streamRevision));
+      return true;
+    };
+
+    const flushSnapshot = async () => {
+      if (snapshotTimer) clearTimeout(snapshotTimer);
+      if (snapshotMaxTimer) clearTimeout(snapshotMaxTimer);
+      snapshotTimer = snapshotMaxTimer = 0;
+      if (!snapshotDirty || snapshotSuspended || snapshotWriting || !topic) return;
+      snapshotDirty = false;
+      snapshotWriting = true;
+      try { await writeTopicSnapshot(topicId, topic, cache.entries(), signal); }
+      finally {
+        snapshotWriting = false;
+        if (snapshotDirty) scheduleSnapshotWrite();
+      }
+    };
+
+    const scheduleSnapshotWrite = (immediate) => {
+      snapshotDirty = true;
+      if (snapshotSuspended || snapshotWriting) return;
+      if (immediate) { flushSnapshot().catch(() => {}); return; }
+      if (snapshotTimer) clearTimeout(snapshotTimer);
+      snapshotTimer = setTimeout(() => flushSnapshot().catch(() => {}), 1000);
+      if (!snapshotMaxTimer) snapshotMaxTimer = setTimeout(() => flushSnapshot().catch(() => {}), 3000);
+    };
+
+    const hydrate = (data, cachedEntries) => {
+      if (!data) return null;
+      topic = data;
+      (cachedEntries || []).forEach((entry) => {
+        if (Array.isArray(entry) && entry[1]) cache.set(Number(entry[0]), entry[1]);
+      });
+      const initialPosts = (data.post_stream && data.post_stream.posts) || [];
+      initialPosts.forEach((post) => cache.set(Number(post.id), post));
+      const opPost = initialPosts.find((post) => Number(post.post_number) === 1)
+        || Array.from(cache.values()).find((post) => Number(post.post_number) === 1) || null;
+      replaceStream(((data.post_stream && data.post_stream.stream) || [])
+        .filter((id) => Number(id) !== Number(opPost && opPost.id)));
+      topic._opPost = opPost;
+      topic._opUsername = (topic.details && topic.details.created_by && topic.details.created_by.username)
+        || (opPost && opPost.username) || null;
+      return topic;
+    };
+
+    const mergeTopicResponse = (data) => {
+      hydrate(data, []);
+      scheduleSnapshotWrite();
+      return topic;
+    };
+
+    function fetchTopic(priority) {
+      return fetchJSON(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`, {
+        cache: 'no-store', priority: priority || 'target', signal,
+        dedupeKey: `topic:${BASE}:${topicId}`,
+        headers: {
+          'Accept': 'application/json, text/javascript, */*; q=0.01',
+          'X-Requested-With': 'XMLHttpRequest',
+          'Discourse-Present': 'true', 'Discourse-Track-View': 'true',
+          'Discourse-Track-View-Topic-Id': String(topicId),
+        },
+      });
+    }
+
+    function fetchAnchor(postNumber) {
+      if (!(Number(postNumber) > 1)) return Promise.resolve(null);
+      return fetchJSON(`${BASE}/t/${topicId}.json?post_number=${Number(postNumber)}`, {
+        signal, priority: 'target', dedupeKey: `anchor:${BASE}:${topicId}:${Number(postNumber)}`,
+      }).catch((error) => {
+        if (error && error.name === 'AbortError') throw error;
+        return null;
+      });
+    }
+
+    async function init(targetPostNumber, options) {
+      const forceNetwork = !!(options && options.forceNetwork);
+      const snapshotPromise = forceNetwork ? Promise.resolve(null) : readTopicSnapshot(topicId, signal);
+      const anchorPromise = fetchAnchor(targetPostNumber);
+      const snapshot = await snapshotPromise;
+      prefetchedAnchor = anchorPromise;
+
+      if (snapshot && snapshot.payload && snapshot.payload.topic) {
+        hydrate(snapshot.payload.topic, snapshot.payload.posts);
+        if (!snapshot.fresh) {
+          refreshPromise = fetchTopic('background').then(mergeTopicResponse).catch(() => null);
+        }
+        return topic;
+      }
+
+      const data = await fetchTopic('target');
+      return mergeTopicResponse(data);
+    }
+
+    async function fetchIds(ids, priority, requestSignal) {
+      const missing = ids.filter((id) => !cache.has(Number(id)));
+      if (!missing.length) return;
+      const chunks = [];
+      for (let index = 0; index < missing.length; index += PAGE_SIZE) {
+        chunks.push(missing.slice(index, index + PAGE_SIZE));
+      }
+      await Promise.all(chunks.map(async (chunk) => {
+        const qs = chunk.map((id) => `post_ids[]=${encodeURIComponent(id)}`).join('&');
+        const part = await fetchJSON(`${BASE}/t/${topicId}/posts.json?${qs}`, {
+          signal: requestSignal || signal, priority: priority || 'visible',
+          dedupeKey: `posts:${BASE}:${topicId}:${chunk.join(',')}`,
+        });
+        const changed = (part.post_stream && part.post_stream.posts) || [];
+        changed.forEach((post) => cache.set(Number(post.id), post));
+        emitPosts(changed);
+      }));
+      if (topic) scheduleSnapshotWrite();
+    }
+
+    async function fetchRange(start, end, priority, requestSignal) {
+      const safeStart = Math.max(0, Math.min(stream.length, Number(start) || 0));
+      const safeEnd = Math.max(safeStart, Math.min(stream.length, Number(end) || 0));
+      const ids = stream.slice(safeStart, safeEnd);
+      await fetchIds(ids, priority, requestSignal);
+      return ids.map((id) => cache.get(Number(id))).filter(Boolean);
+    }
+
+    function nearestPost(posts, requested) {
+      const target = Number(requested) || 1;
+      return posts.slice().sort((a, b) => a.post_number - b.post_number)
+        .find((post) => Number(post.post_number) === target)
+        || posts.slice().sort((a, b) => Math.abs(a.post_number - target) - Math.abs(b.post_number - target))[0]
+        || null;
+    }
+
+    async function resolveTarget(targetPostNumber, requestSignal) {
+      const target = Math.max(1, Number(targetPostNumber) || 1);
+      if (target <= 1 || !stream.length) return { index: 0, postNumber: 1 };
+      const cachedTarget = Array.from(cache.values()).find((post) => Number(post.post_number) === target);
+      const cachedIndex = cachedTarget && streamIndex.get(String(cachedTarget.id));
+      if (cachedIndex !== undefined) {
+        const start = Math.max(0, cachedIndex - SLICE_RADIUS);
+        const end = Math.min(stream.length, start + PAGE_SIZE);
+        const posts = await fetchRange(start, end, 'target', requestSignal);
+        return { index: cachedIndex, postNumber: target, start, end, posts };
+      }
+      let anchor = prefetchedAnchor ? await prefetchedAnchor : await fetchAnchor(target);
+      prefetchedAnchor = null;
+      const anchorPosts = (anchor && anchor.post_stream && anchor.post_stream.posts) || [];
+      anchorPosts.forEach((post) => cache.set(Number(post.id), post));
+      emitPosts(anchorPosts);
+      const nearest = nearestPost(anchorPosts, target);
+      let indexed = nearest && streamIndex.get(String(nearest.id));
+      if (indexed === undefined && nearest && Number(nearest.id) > 0) {
+        const estimated = Math.max(0, Math.min(stream.length, Number(nearest.post_number) - 2));
+        const nextStream = stream.slice();
+        nextStream.splice(estimated, 0, Number(nearest.id));
+        replaceStream(nextStream);
+        indexed = streamIndex.get(String(nearest.id));
+      }
+      const index = indexed === undefined
+        ? Math.max(0, Math.min(stream.length - 1, target - 2)) : indexed;
+      const start = Math.max(0, index - SLICE_RADIUS);
+      const end = Math.min(stream.length, start + PAGE_SIZE);
+      const posts = await fetchRange(start, end, 'target', requestSignal);
+      const resolved = nearestPost(posts, nearest ? nearest.post_number : target);
+      return { index, postNumber: resolved ? resolved.post_number : target, start, end, posts };
+    }
+
+    async function loadAll(requestSignal, onBatch) {
+      snapshotSuspended += 1;
+      try {
+        for (let start = 0; start < stream.length; start += PAGE_SIZE * REQUEST_MAX_CONCURRENCY) {
+          throwIfAborted(requestSignal);
+          const groups = [];
+          for (let offset = 0; offset < PAGE_SIZE * REQUEST_MAX_CONCURRENCY; offset += PAGE_SIZE) {
+            if (start + offset >= stream.length) break;
+            groups.push(fetchRange(start + offset, start + offset + PAGE_SIZE, 'background', requestSignal));
+          }
+          await Promise.all(groups);
+          if (onBatch) onBatch(Math.min(stream.length, start + PAGE_SIZE * REQUEST_MAX_CONCURRENCY), stream.length);
+        }
+        return Array.from(cache.values());
+      } finally {
+        snapshotSuspended = Math.max(0, snapshotSuspended - 1);
+        if (!snapshotSuspended) scheduleSnapshotWrite(true);
+      }
+    }
+
+    function updatePost(postId, updater) {
+      const id = Number(postId);
+      const current = cache.get(id);
+      if (!current) return null;
+      const next = typeof updater === 'function' ? updater(Object.assign({}, current)) : Object.assign({}, current, updater || {});
+      if (!next) return current;
+      cache.set(id, next);
+      emitPosts([next]);
+      scheduleSnapshotWrite();
+      return next;
+    }
+
+    function mergePost(post) {
+      if (!post || !post.id) return null;
+      const id = Number(post.id);
+      const next = Object.assign({}, cache.get(id) || {}, post);
+      cache.set(id, next);
+      if (Number(next.post_number) > 1 && !streamIndex.has(String(id))) {
+        const nextStream = stream.slice();
+        const estimated = Math.max(0, Math.min(nextStream.length, Number(next.post_number) - 2));
+        nextStream.splice(estimated, 0, id);
+        replaceStream(nextStream);
+      }
+      emitPosts([next]);
+      scheduleSnapshotWrite();
+      return next;
+    }
+
+    return {
+      init, resolveTarget, fetchRange, fetchIds, loadAll, updatePost, mergePost, flushSnapshot,
+      get streamLength() { return stream.length; },
+      get streamRevision() { return streamRevision; },
+      get topic() { return topic; },
+      get refreshPromise() { return refreshPromise; },
+      getStreamId(index) { return stream[index]; },
+      getStreamIndex(postId) {
+        const index = streamIndex.get(String(postId));
+        return index === undefined ? -1 : index;
+      },
+      getCachedByIndex(index) { return cache.get(Number(stream[index])) || null; },
+      getPostById(postId) { return cache.get(Number(postId)) || null; },
+      getStreamIds() { return stream.slice(); },
+      getCachedPosts() { return Array.from(cache.values()); },
+      subscribeStream(listener) { streamListeners.add(listener); return () => streamListeners.delete(listener); },
+      subscribePosts(listener) { postListeners.add(listener); return () => postListeners.delete(listener); },
+      destroy() {
+        if (snapshotTimer) clearTimeout(snapshotTimer);
+        if (snapshotMaxTimer) clearTimeout(snapshotMaxTimer);
+        snapshotTimer = snapshotMaxTimer = 0;
+        streamListeners.clear(); postListeners.clear();
+        if (snapshotDirty) flushSnapshot().catch(() => {});
+      },
+    };
+  }
+
+  function createVirtualFlow(loader, ctx) {
+    const DEFAULT_HEIGHT = 184;
+    const OVERSCAN_SCREENS = 1.25;
+    let logicalIds = loader.getStreamIds();
+    const heightByPostId = new Map();
+    let positionByPostId = new Map();
+    let heights = logicalIds.map((id) => heightByPostId.get(id) || DEFAULT_HEIGHT);
+    let prefix = [0];
+    let mountedStart = -1;
+    let mountedEnd = -1;
+    let renderToken = 0;
+    let scrollRaf = 0;
+    let destroyed = false;
+    let onlyOp = false;
+    let onlyOpController = null;
+    let pinnedAnchor = null;
+    const resizeObserver = new ResizeObserver((entries) => {
+      if (destroyed || !entries.length) return;
+      const anchor = pinnedAnchor || currentAnchor();
+      let changed = false;
+      entries.forEach((entry) => {
+        const postId = Number(entry.target.dataset.streamPostId);
+        const position = positionByPostId.get(postId);
+        if (position === undefined) return;
+        const next = Math.max(56, entry.borderBoxSize && entry.borderBoxSize[0]
+          ? entry.borderBoxSize[0].blockSize : entry.contentRect.height);
+        if (Math.abs((heights[position] || DEFAULT_HEIGHT) - next) > 0.5) {
+          heights[position] = next;
+          heightByPostId.set(postId, next);
+          changed = true;
+        }
+      });
+      if (!changed) return;
+      rebuildPrefix();
+      syncSpacers();
+      if (anchor.pinned) {
+        const mapped = positionByPostId.get(Number(anchor.postId));
+        const position = mapped === undefined ? anchor.position : mapped;
+        ctx.scrollRoot.scrollTop = contentTop() + prefix[position] - anchor.viewportOffset;
+      } else {
+        restoreAnchor(anchor);
+      }
+    });
+
+    ctx.commentsEl.innerHTML = `
+      <div class="ldp-virtual-spacer ldp-virtual-spacer-top" aria-hidden="true"></div>
+      <div class="ldp-virtual-window"></div>
+      <div class="ldp-virtual-spacer ldp-virtual-spacer-bottom" aria-hidden="true"></div>`;
+    const topSpacer = ctx.commentsEl.querySelector('.ldp-virtual-spacer-top');
+    const windowEl = ctx.commentsEl.querySelector('.ldp-virtual-window');
+    const bottomSpacer = ctx.commentsEl.querySelector('.ldp-virtual-spacer-bottom');
+
+    function rebuildPrefix() {
+      positionByPostId = new Map(logicalIds.map((id, index) => [Number(id), index]));
+      prefix = new Array(heights.length + 1);
+      prefix[0] = 0;
+      for (let index = 0; index < heights.length; index++) prefix[index + 1] = prefix[index] + (heights[index] || DEFAULT_HEIGHT);
+    }
+
+    function lowerBound(value) {
+      let low = 0, high = Math.max(0, prefix.length - 1);
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        if (prefix[mid] < value) low = mid + 1;
+        else high = mid;
+      }
+      return Math.max(0, Math.min(heights.length - 1, low - (prefix[low] > value ? 1 : 0)));
+    }
+
+    function contentTop() {
+      return ctx.commentsEl.offsetTop;
+    }
+
+    function currentAnchor() {
+      const y = Math.max(0, ctx.scrollRoot.scrollTop - contentTop());
+      const position = lowerBound(y);
+      return { position, postId: logicalIds[position], offset: y - prefix[position] };
+    }
+
+    function restoreAnchor(anchor) {
+      if (!anchor || !heights.length) return;
+      const mapped = positionByPostId.get(Number(anchor.postId));
+      const position = mapped === undefined ? Math.min(anchor.position, heights.length - 1) : mapped;
+      ctx.scrollRoot.scrollTop = contentTop() + prefix[position] + anchor.offset;
+    }
+
+    function syncSpacers() {
+      const top = mountedStart < 0 ? 0 : prefix[mountedStart];
+      const bottom = mountedEnd < 0 ? prefix[prefix.length - 1] : prefix[prefix.length - 1] - prefix[mountedEnd];
+      topSpacer.style.height = `${Math.max(0, top)}px`;
+      bottomSpacer.style.height = `${Math.max(0, bottom)}px`;
+    }
+
+    function clearWindow() {
+      resizeObserver.disconnect();
+      ctx.nodeMap.forEach((node) => {
+        ctx.tracker.unobserve(node);
+        if (ctx.repliesIO && ctx.repliesIO.clearNode) ctx.repliesIO.clearNode(node);
+      });
+      ctx.windowEpoch += 1;
+      ctx.nodeMap.clear();
+      windowEl.replaceChildren();
+    }
+
+    function addReplySummary(node, post) {
+      if (!(Number(post.reply_to_post_number) > 1)) return;
+      node.classList.add('ldp-reply-summary');
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'ldp-thread-toggle';
+      toggle.textContent = `回应 #${post.reply_to_post_number} · 展开`;
+      const content = node.querySelector(':scope > .ldp-content');
+      if (content) content.before(toggle);
+    }
+
+    function renderWindow(entries, start, end) {
+      clearWindow();
+      const byParent = new Map();
+      entries.forEach(({ post }) => {
+        if (!post) return;
+        const parent = Number(post.reply_to_post_number) || 0;
+        if (parent > 1) {
+          if (!byParent.has(parent)) byParent.set(parent, []);
+          byParent.get(parent).push(post);
+        }
+      });
+      const fragment = document.createDocumentFragment();
+      entries.forEach(({ id, post }) => {
+        if (!post) {
+          const placeholder = document.createElement('div');
+          placeholder.className = 'ldp-missing-post';
+          placeholder.dataset.streamPostId = String(id);
+          placeholder.setAttribute('aria-hidden', 'true');
+          fragment.appendChild(placeholder);
+          return;
+        }
+        const node = renderPost(post, false, ctx);
+        node.dataset.streamPostId = String(id);
+        addReplySummary(node, post);
+        ctx.nodeMap.set(Number(post.post_number), node);
+        ctx.tracker.observe(node);
+        if (ctx.repliesIO && Number(post.reply_count) > 0) ctx.repliesIO.observe(node);
+        fragment.appendChild(node);
+      });
+      windowEl.appendChild(fragment);
+      entries.forEach(({ post }) => {
+        if (!post) return;
+        const parent = ctx.nodeMap.get(Number(post.post_number));
+        const children = parent && parent.querySelector(':scope > .ldp-children');
+        if (!children) return;
+        (byParent.get(Number(post.post_number)) || []).slice(0, SUB_REPLY_INITIAL_SIZE).forEach((reply) => {
+          const copy = renderPost(reply, true, ctx);
+          copy.classList.add('ldp-post-copy');
+          copy.setAttribute('aria-label', `#${reply.post_number} 的直属回复副本`);
+          children.appendChild(copy);
+        });
+        if (ctx.subReplyState.has(Number(post.post_number))) renderSubReplyState(Number(post.post_number), ctx);
+      });
+      Array.from(windowEl.children).forEach((node) => resizeObserver.observe(node));
+      if (ctx.onPostsChanged) ctx.onPostsChanged();
+    }
+
+    async function mount(start, end, priority) {
+      if (destroyed || !logicalIds.length) return;
+      const safeStart = Math.max(0, Math.min(logicalIds.length - 1, start));
+      const safeEnd = Math.max(safeStart + 1, Math.min(logicalIds.length, end));
+      if (safeStart === mountedStart && safeEnd === mountedEnd) return;
+      const token = ++renderToken;
+      const source = logicalIds.slice(safeStart, safeEnd);
+      const groups = [];
+      for (let index = 0; index < source.length; index += PAGE_SIZE) {
+        const chunk = source.slice(index, index + PAGE_SIZE);
+        groups.push(loader.fetchIds(chunk, priority || 'visible', ctx.signal));
+      }
+      await Promise.all(groups);
+      if (destroyed || token !== renderToken) return;
+      const entries = source.map((id) => ({ id, post: loader.getPostById(id) }));
+      mountedStart = safeStart;
+      mountedEnd = safeEnd;
+      renderWindow(entries, safeStart, safeEnd);
+      syncSpacers();
+    }
+
+    function desiredWindow() {
+      const relativeTop = Math.max(0, ctx.scrollRoot.scrollTop - contentTop());
+      const viewport = Math.max(1, ctx.scrollRoot.clientHeight);
+      const first = lowerBound(Math.max(0, relativeTop - viewport * OVERSCAN_SCREENS));
+      let last = lowerBound(relativeTop + viewport * (1 + OVERSCAN_SCREENS)) + 1;
+      last = Math.min(logicalIds.length, Math.max(first + 1, last));
+      if (last - first > MAX_RENDERED_POSTS) last = first + MAX_RENDERED_POSTS;
+      return { start: first, end: last };
+    }
+
+    function onScroll() {
+      if (scrollRaf) return;
+      scrollRaf = requestAnimationFrame(() => {
+        scrollRaf = 0;
+        const desired = desiredWindow();
+        mount(desired.start, desired.end, 'visible').catch(() => {});
+        const anchor = currentAnchor();
+        const post = loader.getPostById(logicalIds[anchor.position]);
+        if (post && loader.topic) rememberTopicHistory(loader.topic, post.post_number);
+      });
+    }
+
+    async function seekToIndex(streamIndex, desiredPostNumber, options) {
+      if (!logicalIds.length) {
+        ctx.scrollRoot.scrollTop = 0;
+        return true;
+      }
+      const streamId = loader.getStreamIds()[Math.max(0, Math.min(loader.streamLength - 1, Number(streamIndex) || 0))];
+      let position = positionByPostId.get(Number(streamId));
+      if (position === undefined) position = 0;
+      const start = Math.max(0, Math.min(position - SLICE_RADIUS, Math.max(0, logicalIds.length - PAGE_SIZE)));
+      const end = Math.min(logicalIds.length, Math.max(start + PAGE_SIZE, position + 1));
+      const local = position >= mountedStart && position < mountedEnd;
+      await mount(start, end, 'target');
+      const behavior = local && options && options.smooth ? 'smooth' : 'auto';
+      const top = contentTop() + prefix[position];
+      const viewportOffset = ctx.scrollRoot.clientHeight * 0.3;
+      pinnedAnchor = { position, postId: logicalIds[position], viewportOffset, pinned: true };
+      ctx.scrollRoot.scrollTo({ top: Math.max(0, top - viewportOffset), behavior });
+      if (behavior === 'smooth') await waitForScrollEnd(ctx.scrollRoot);
+      const node = desiredPostNumber ? ctx.nodeMap.get(Number(desiredPostNumber)) : null;
+      if (node) {
+        node.classList.add('ldp-flash');
+        setTimeout(() => node.classList.remove('ldp-flash'), 1700);
+      }
+      return true;
+    }
+
+    async function seekToPost(postNumber) {
+      const resolved = await loader.resolveTarget(postNumber, ctx.signal);
+      return seekToIndex(resolved.index, resolved.postNumber, { smooth: false });
+    }
+
+    async function setOnlyOp(enabled) {
+      onlyOp = !!enabled;
+      if (onlyOpController) onlyOpController.abort();
+      onlyOpController = null;
+      await reconcileStream(loader.getStreamIds());
+      if (!onlyOp) return;
+      onlyOpController = new AbortController();
+      const controller = onlyOpController;
+      const abortScan = () => controller.abort();
+      ctx.signal.addEventListener('abort', abortScan, { once: true });
+      loader.loadAll(controller.signal, () => {
+        if (!destroyed && onlyOp && !controller.signal.aborted) reconcileStream(loader.getStreamIds()).catch(() => {});
+      }).then(() => {
+        if (!destroyed && onlyOp && !controller.signal.aborted) return reconcileStream(loader.getStreamIds());
+      }).catch((error) => {
+        if (!error || error.name !== 'AbortError') console.warn('[LinuxDo Reader] 只看楼主加载失败', error);
+      }).finally(() => ctx.signal.removeEventListener('abort', abortScan));
+    }
+
+    async function reconcileStream(nextIds) {
+      if (destroyed) return;
+      const anchor = logicalIds.length ? currentAnchor() : null;
+      logicalIds = (nextIds || []).filter((id) => !onlyOp || (loader.getPostById(id) || {}).username === ctx.op);
+      heights = logicalIds.map((id) => heightByPostId.get(Number(id)) || DEFAULT_HEIGHT);
+      rebuildPrefix();
+      mountedStart = mountedEnd = -1;
+      clearWindow();
+      syncSpacers();
+      if (!logicalIds.length) return;
+      const desired = desiredWindow();
+      await mount(desired.start, desired.end, 'visible');
+      if (anchor) restoreAnchor(anchor);
+    }
+
+    rebuildPrefix();
+    syncSpacers();
+    const unsubscribeStream = loader.subscribeStream((ids) => reconcileStream(ids).catch(() => {}));
+    const unsubscribePosts = loader.subscribePosts((posts) => {
+      const root = ctx.commentsEl.closest('.ldp-shell') || ctx.commentsEl;
+      posts.forEach((post) => syncRenderedPostState(root, post));
+      if (onlyOp && posts.some((post) => post && post.username === ctx.op)) reconcileStream(loader.getStreamIds()).catch(() => {});
+    });
+    const releasePinnedAnchor = () => { pinnedAnchor = null; };
+    ctx.scrollRoot.addEventListener('scroll', onScroll, { passive: true });
+    ctx.scrollRoot.addEventListener('wheel', releasePinnedAnchor, { passive: true });
+    ctx.scrollRoot.addEventListener('touchmove', releasePinnedAnchor, { passive: true });
+    return {
+      mountInitial(target) {
+        return seekToIndex(target.index || 0, target.postNumber, { smooth: false });
+      },
+      seekToIndex, seekToPost, setOnlyOp,
+      getCurrentPost() {
+        const anchor = currentAnchor();
+        return loader.getPostById(logicalIds[anchor.position]);
+      },
+      refresh() { onScroll(); },
+      destroy() {
+        destroyed = true;
+        if (onlyOpController) onlyOpController.abort();
+        unsubscribeStream(); unsubscribePosts();
+        cancelAnimationFrame(scrollRaf);
+        resizeObserver.disconnect();
+        ctx.scrollRoot.removeEventListener('scroll', onScroll);
+        ctx.scrollRoot.removeEventListener('wheel', releasePinnedAnchor);
+        ctx.scrollRoot.removeEventListener('touchmove', releasePinnedAnchor);
+        clearWindow();
+      },
+    };
+  }
+
   /* ============ 13. 弹窗主体 + 双向分片加载 ============ */
   let CURRENT_OVERLAY = null;
   let CURRENT_MODAL_CLOSE = null;
 
-  async function openModal(topicId, targetPostNumber) {
-    closeUserCard();
-    if (CURRENT_MODAL_CLOSE) CURRENT_MODAL_CLOSE();
-    else if (CURRENT_OVERLAY) { CURRENT_OVERLAY.remove(); CURRENT_OVERLAY = null; }
-    const abortController = new AbortController();
+  function readerIcon(path, viewBox) {
+    return `<svg viewBox="${viewBox || '0 0 24 24'}" aria-hidden="true">${path}</svg>`;
+  }
+
+  const READER_ICONS = {
+    history: readerIcon('<path d="M12 2a10 10 0 1 1-8.4 4.58L2 5v5h5L5.05 8.05A7.5 7.5 0 1 0 12 4.5V2Zm-1 5h2v5.4l3.4 2-1 1.72L11 13.5V7Z"/>'),
+    collection: readerIcon(ICONS.bookmark),
+    previous: readerIcon('<path d="m15.5 5-7 7 7 7 1.5-1.5-5.5-5.5L17 6.5 15.5 5Z"/>'),
+    next: readerIcon('<path d="m8.5 5 7 7-7 7L7 17.5l5.5-5.5L7 6.5 8.5 5Z"/>'),
+    filter: readerIcon('<path d="M4 5h16v2H4V5Zm3 6h10v2H7v-2Zm3 6h4v2h-4v-2Z"/>'),
+    refresh: readerIcon('<path d="M17.65 6.35A8 8 0 1 0 20 12h-2.5a5.5 5.5 0 1 1-1.46-3.73L13 11h7V4l-2.35 2.35Z"/>'),
+    close: readerIcon('<path d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4 6.4 5Z"/>'),
+    trash: readerIcon('<path d="M8 3h8l1 2h4v2H3V5h4l1-2Zm-2 6h12l-1 12H7L6 9Zm3 2 .5 8h2L11 11H9Zm4 0-.5 8h2l.5-8h-2Z"/>'),
+  };
+
+  function closeReaderPanel(app) {
+    if (!app) return;
+    if (app.panelAbort) app.panelAbort.abort();
+    app.panelAbort = null;
+    const panel = app.modal && app.modal.querySelector('.ldp-reader-panel');
+    if (panel) panel.remove();
+  }
+
+  function panelItemHtml(item, type) {
+    const target = collectionItemTarget(item);
+    const title = item.title || item.topic_title || (item.topic && item.topic.title)
+      || item.name || `主题 ${target.topicId || ''}`;
+    const username = item.username || (item.user && item.user.username) || '';
+    const avatarTemplate = item.avatar_template || (item.user && item.user.avatar_template) || '';
+    const avatar = avatarTemplate ? resolveAvatar(avatarTemplate, 48) : '';
+    const meta = type === 'responses'
+      ? `${item._reactionType === 'reaction' ? '自定义回应' : '点赞'} · ${fmtTime(item.created_at || item.acted_at)}`
+      : `${target.postNumber > 1 ? `#${target.postNumber}` : '整帖'} · ${username ? `@${username}` : fmtTime(item.created_at)}`;
+    return `<div class="ldp-panel-item" data-topic-id="${escAttr(target.topicId || '')}" data-post-number="${target.postNumber}"
+      data-record-id="${escAttr(String(item.id || item.bookmark_id || ''))}" data-reaction-type="${escAttr(item._reactionType || '')}"
+      data-post-id="${escAttr(String(item.post_id || (String(item.bookmarkable_type).toLowerCase() === 'post' ? item.bookmarkable_id : '') || item.id || ''))}" data-reaction-id="${escAttr(String(item.reaction_id || item.reaction_value || item.reaction || ''))}">
+      ${avatar ? `<img class="ldp-panel-avatar" src="${escAttr(avatar)}" alt="">` : '<span class="ldp-panel-avatar"></span>'}
+      <button type="button" class="ldp-panel-item-main"><span class="ldp-panel-item-title">${esc(title)}</span><span class="ldp-panel-item-meta">${esc(meta)}</span></button>
+      <button type="button" class="ldp-panel-delete" title="移除" aria-label="移除">${READER_ICONS.trash}</button>
+    </div>`;
+  }
+
+  function showHistoryPanel(app) {
+    closeReaderPanel(app);
+    const panel = document.createElement('section');
+    panel.className = 'ldp-reader-panel';
+    panel.innerHTML = `<div class="ldp-panel-head"><strong>浏览历史</strong><button class="ldp-panel-close" title="关闭">×</button></div>
+      <input class="ldp-panel-search" type="search" placeholder="搜索标题或作者" aria-label="搜索浏览历史">
+      <div class="ldp-panel-list"></div>
+      <div class="ldp-panel-foot"><button type="button" data-panel-action="clear">清空历史</button><span></span><div><button type="button" data-panel-action="prev">上一页</button> <button type="button" data-panel-action="next">下一页</button></div></div>`;
+    app.modal.appendChild(panel);
+    let page = 0;
+    const pageSize = 20;
+    const search = panel.querySelector('.ldp-panel-search');
+    const list = panel.querySelector('.ldp-panel-list');
+    const pageText = panel.querySelector('.ldp-panel-foot span');
+    const render = () => {
+      const query = search.value.trim().toLowerCase();
+      const entries = getHistoryEntries().filter((item) => !query
+        || `${item.title} ${item.username}`.toLowerCase().includes(query));
+      const pages = Math.max(1, Math.ceil(entries.length / pageSize));
+      page = Math.max(0, Math.min(pages - 1, page));
+      const slice = entries.slice(page * pageSize, (page + 1) * pageSize);
+      list.innerHTML = slice.length ? slice.map((item) => panelItemHtml({
+        id: item.topicId, topic_id: item.topicId, post_number: item.lastPostNumber,
+        title: item.title, username: item.username, avatar_template: item.avatar,
+        created_at: new Date(item.lastViewedAt).toISOString(),
+      }, 'history')).join('') : '<div class="ldp-panel-empty">暂无浏览历史</div>';
+      pageText.textContent = `${page + 1} / ${pages}`;
+    };
+    panel.querySelector('.ldp-panel-close').addEventListener('click', () => closeReaderPanel(app));
+    search.addEventListener('input', () => { page = 0; render(); });
+    panel.addEventListener('click', (event) => {
+      const row = event.target.closest('.ldp-panel-item');
+      if (event.target.closest('.ldp-panel-item-main') && row) {
+        closeReaderPanel(app);
+        app.loadTopic(row.dataset.topicId, Number(row.dataset.postNumber));
+      } else if (event.target.closest('.ldp-panel-delete') && row) {
+        saveHistoryEntries(getHistoryEntries().filter((item) => String(item.topicId) !== row.dataset.topicId));
+        render();
+      } else if (event.target.closest('[data-panel-action="clear"]')) {
+        if (confirm('清空当前账号在本站的全部浏览历史？')) { saveHistoryEntries([]); render(); }
+      } else if (event.target.closest('[data-panel-action="prev"]')) { page -= 1; render(); }
+      else if (event.target.closest('[data-panel-action="next"]')) { page += 1; render(); }
+    });
+    render();
+    search.focus({ preventScroll: true });
+  }
+
+  function showCollectionPanel(app) {
+    closeReaderPanel(app);
+    const controller = new AbortController();
+    app.panelAbort = controller;
+    const panel = document.createElement('section');
+    panel.className = 'ldp-reader-panel';
+    panel.innerHTML = `<div class="ldp-panel-head"><strong>收藏与回应</strong><button class="ldp-panel-close" title="关闭">×</button></div>
+      <input class="ldp-panel-search" type="search" placeholder="搜索收藏与回应" aria-label="搜索收藏与回应">
+      <div class="ldp-panel-tabs">
+        <button class="ldp-panel-tab active" data-tab="responses">回应</button>
+        <button class="ldp-panel-tab" data-tab="topics">帖子</button>
+        <button class="ldp-panel-tab" data-tab="posts">楼层</button>
+      </div><div class="ldp-panel-list"><div class="ldp-panel-loading">正在读取…</div></div>
+      <div class="ldp-panel-foot"><span></span><div><button type="button" data-panel-action="prev">上一页</button> <button type="button" data-panel-action="next">下一页</button></div></div>`;
+    app.modal.appendChild(panel);
+    const state = { tab: 'responses', page: 0, bookmarks: null, responses: null };
+    let tabController = null;
+    const pageSize = 20;
+    const list = panel.querySelector('.ldp-panel-list');
+    const search = panel.querySelector('.ldp-panel-search');
+    const pageText = panel.querySelector('.ldp-panel-foot span');
+
+    const itemsForTab = () => {
+      if (state.tab === 'responses') return state.responses || [];
+      return (state.bookmarks || []).filter((item) => {
+        const target = collectionItemTarget(item);
+        const isPost = String(item.bookmarkable_type || '').toLowerCase() === 'post' || target.postNumber > 1;
+        return state.tab === 'posts' ? isPost : !isPost;
+      });
+    };
+    const render = () => {
+      const query = search.value.trim().toLowerCase();
+      const items = itemsForTab().filter((item) => !query || JSON.stringify([
+        item.title, item.topic_title, item.username, item.name,
+      ]).toLowerCase().includes(query));
+      const pages = Math.max(1, Math.ceil(items.length / pageSize));
+      state.page = Math.max(0, Math.min(pages - 1, state.page));
+      const slice = items.slice(state.page * pageSize, (state.page + 1) * pageSize);
+      list.innerHTML = slice.length ? slice.map((item) => panelItemHtml(item, state.tab === 'responses' ? 'responses' : 'bookmarks')).join('')
+        : '<div class="ldp-panel-empty">此分类暂无内容</div>';
+      pageText.textContent = `${state.page + 1} / ${pages}`;
+    };
+    const loadTab = async () => {
+      if (tabController) tabController.abort();
+      tabController = new AbortController();
+      const activeController = tabController;
+      const abortTab = () => activeController.abort();
+      controller.signal.addEventListener('abort', abortTab, { once: true });
+      list.innerHTML = '<div class="ldp-panel-loading">正在读取…</div>';
+      try {
+        if (state.tab === 'responses' && !state.responses) state.responses = await loadResponsesCollection(activeController.signal);
+        if (state.tab !== 'responses' && !state.bookmarks) state.bookmarks = await loadBookmarksCollection(activeController.signal);
+        if (activeController.signal.aborted) return;
+        render();
+      } catch (error) {
+        if (error && error.name === 'AbortError') return;
+        list.innerHTML = `<div class="ldp-panel-error">读取失败：${esc(error.message)}</div>`;
+      } finally { controller.signal.removeEventListener('abort', abortTab); }
+    };
+    panel.querySelector('.ldp-panel-close').addEventListener('click', () => closeReaderPanel(app));
+    panel.querySelector('.ldp-panel-tabs').addEventListener('click', (event) => {
+      const tab = event.target.closest('[data-tab]');
+      if (!tab) return;
+      state.tab = tab.dataset.tab; state.page = 0;
+      panel.querySelectorAll('.ldp-panel-tab').forEach((button) => button.classList.toggle('active', button === tab));
+      loadTab();
+    });
+    search.addEventListener('input', () => { state.page = 0; render(); });
+    panel.addEventListener('click', async (event) => {
+      const row = event.target.closest('.ldp-panel-item');
+      if (event.target.closest('.ldp-panel-item-main') && row && row.dataset.topicId) {
+        closeReaderPanel(app); app.loadTopic(row.dataset.topicId, Number(row.dataset.postNumber)); return;
+      }
+      if (event.target.closest('.ldp-panel-delete') && row) {
+        const button = event.target.closest('.ldp-panel-delete'); button.disabled = true;
+        try {
+          if (state.tab === 'responses') {
+            if (row.dataset.reactionType === 'like') {
+              await apiSend(`${BASE}/post_actions/${row.dataset.postId}?post_action_type_id=2`, 'DELETE');
+              if (app.loader) app.loader.updatePost(row.dataset.postId, (post) => {
+                const actions = Array.isArray(post.actions_summary) ? post.actions_summary.map((item) => Object.assign({}, item)) : [];
+                const like = actions.find((item) => Number(item.id) === 2);
+                if (like) { like.acted = false; like.count = Math.max(0, Number(like.count || 0) - 1); }
+                post.actions_summary = actions; return post;
+              });
+            } else if (row.dataset.postId && row.dataset.reactionId) {
+              await apiSend(`${BASE}/discourse-reactions/posts/${row.dataset.postId}/custom-reactions/${encodeURIComponent(row.dataset.reactionId)}/toggle.json`, 'PUT');
+              if (app.loader) app.loader.updatePost(row.dataset.postId, (post) => {
+                const reactions = Array.isArray(post.reactions) ? post.reactions.map((item) => Object.assign({}, item)) : [];
+                const reaction = reactions.find((item) => String(item.id) === row.dataset.reactionId);
+                if (reaction) reaction.count = Math.max(0, Number(reaction.count || 0) - 1);
+                post.reactions = reactions.filter((item) => Number(item.count) > 0);
+                post.current_user_reaction = null; return post;
+              });
+            }
+            state.responses = (state.responses || []).filter((item) => {
+              const postId = String(item.post_id || item.id || '');
+              const reactionId = String(item.reaction_id || item.reaction_value || item.reaction || '');
+              return postId !== row.dataset.postId || reactionId !== String(row.dataset.reactionId || '');
+            });
+            await invalidateCollectionCache('responses');
+          } else if (row.dataset.recordId) {
+            await apiSend(`${BASE}/bookmarks/${row.dataset.recordId}`, 'DELETE');
+            if (app.loader && row.dataset.postId) app.loader.updatePost(row.dataset.postId, {
+              bookmarked: false, bookmark_id: null,
+            });
+            state.bookmarks = (state.bookmarks || []).filter((item) => String(item.id || item.bookmark_id) !== row.dataset.recordId);
+            await invalidateCollectionCache('bookmarks');
+          }
+          render();
+        } catch (error) { alert('移除失败：' + error.message); }
+        finally { if (button.isConnected) button.disabled = false; }
+      } else if (event.target.closest('[data-panel-action="prev"]')) { state.page -= 1; render(); }
+      else if (event.target.closest('[data-panel-action="next"]')) { state.page += 1; render(); }
+    });
+    loadTab();
+  }
+
+  let READER_APP = null;
+  function createReaderApp() {
     const overlay = document.createElement('div');
-    overlay.className = 'ldp-overlay';
-    overlay.innerHTML = `
-      <div class="ldp-modal">
-        <div class="ldp-header">
-          <div class="ldp-header-main">
-            <div class="ldp-title-lockup">
-              <div class="ldp-title-context" hidden>
-                <span class="ldp-topic-level"></span>
-              </div>
-              <div class="ldp-title-copy">
-                <h2 class="ldp-title"><span class="ldp-sk ldp-sk-title"></span></h2>
-                <div class="ldp-meta"><span class="ldp-sk ldp-sk-meta"></span></div>
-              </div>
-            </div>
+    overlay.className = 'ldp-overlay ldp-v2';
+    overlay.innerHTML = `<div class="ldp-modal" role="dialog" aria-modal="true" aria-labelledby="ldp-reader-title">
+      <header class="ldp-header">
+        <div class="ldp-header-line">
+          <img class="ldp-site-mark" src="${escAttr(document.querySelector('link[rel="icon"]')?.href || 'https://cdn3.ldstatic.com/optimized/4X/6/a/6/6a6affc7b1ce8140279e959d32671304db06d5ab_2_180x180.png')}" alt="">
+          <div class="ldp-header-main"><div class="ldp-title-lockup"><div class="ldp-title-context" hidden><span class="ldp-topic-level"></span></div>
+            <div class="ldp-title-copy"><h2 class="ldp-title" id="ldp-reader-title"><span class="ldp-sk ldp-sk-title"></span></h2>
+              <div class="ldp-meta"><span class="ldp-sk ldp-sk-meta"></span><span class="ldp-topic-taxonomy"></span></div></div></div></div>
+        </div>
+        <div class="ldp-toolbar">
+          <div class="ldp-toolbar-group">
+            <button class="ldp-toolbtn" data-reader-action="previous" title="上一个历史主题">${READER_ICONS.previous}</button>
+            <button class="ldp-toolbtn" data-reader-action="next" title="下一个历史主题">${READER_ICONS.next}</button>
+            <span class="ldp-tool-separator"></span>
+            <button class="ldp-toolbtn" data-reader-action="history" title="浏览历史">${READER_ICONS.history}</button>
+            <button class="ldp-toolbtn" data-reader-action="collections" title="收藏与回应">${READER_ICONS.collection}</button>
+            <button class="ldp-toolbtn" data-reader-action="only-op" title="只看楼主">${READER_ICONS.filter}</button>
           </div>
           <div class="ldp-head-btns">
-            <button class="ldp-close" title="关闭">×</button>
+            <span class="ldp-obsidian-host"></span>
+            <button class="ldp-toolbtn" data-reader-action="topic-bookmark" title="收藏本帖">${READER_ICONS.collection}</button>
+            <button class="ldp-toolbtn" data-reader-action="refresh" title="清除当前主题缓存并刷新">${READER_ICONS.refresh}</button>
+            <a class="ldp-toolbtn ldp-f-open" href="#" target="_blank" rel="noopener" title="打开原帖">${readerIcon(ICONS.newTab)}</a>
+            <button class="ldp-close" title="关闭" aria-label="关闭">${READER_ICONS.close}</button>
           </div>
         </div>
-        <div class="ldp-shell">
-          <div class="ldp-body">
-            <div class="ldp-topic"></div>
-            <div class="ldp-comments-header">评论<span class="ldp-comments-count"></span></div>
-            <div class="ldp-load-up-tip"><span class="ldp-tip-icon">⌛</span>正在向上加载…</div>
-            <div class="ldp-up-sentinel"></div>
-            <div class="ldp-comments"><div class="ldp-comments-empty">暂无评论</div></div>
-            <div class="ldp-loading-tip"><span class="ldp-tip-icon">⌛</span>正在加载评论…</div>
-            <div class="ldp-down-sentinel"></div>
-            <div class="ldp-load-down-tip"><span class="ldp-tip-icon">⌛</span>正在向下加载…</div>
-            <div class="ldp-loadmask">${SKELETON_HTML}</div>
-          </div>
-          <aside class="ldp-timeline" aria-label="帖子时间轴">
-            <button type="button" class="ldp-tl-date ldp-tl-top-date" title="跳到顶部">顶部</button>
-            <div class="ldp-tl-current" aria-label="当前楼层">
-              <strong class="ldp-tl-current-post">1 / 1</strong>
-              <span class="ldp-tl-current-date">当前</span>
-            </div>
-            <button type="button" class="ldp-tl-track" role="slider" aria-label="滚动位置"
-              aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-              <span class="ldp-tl-fill"></span>
-              <span class="ldp-tl-thumb"></span>
-            </button>
-            <button type="button" class="ldp-tl-date ldp-tl-bottom-date" title="加载并跳到最新回复">底部</button>
-          </aside>
-        </div>
-        <div class="ldp-footer" hidden>
-          <button class="ldp-fbtn ldp-f-like" disabled title="点赞">
-            <svg viewBox="0 0 24 24" fill="currentColor">${ICONS.like}</svg>
-            <span class="ldp-f-like-count">0</span>
-          </button>
-          <button class="ldp-fbtn ldp-f-reply" title="回复帖子">
-            <svg viewBox="0 0 1024 1024" fill="currentColor">${ICONS.reply}</svg>
-            <span class="ldp-f-reply-count">0</span>
-          </button>
-          <button class="ldp-fbtn ldp-f-boost" title="给楼主发送Boost">
-            <svg viewBox="0 0 1024 1024" style="width:16px;height:16px;">${ICONS.boost}</svg>
-          </button>
-          <button class="ldp-fbtn ldp-f-bookmark" title="加入书签">
-            <svg viewBox="0 0 24 24" fill="currentColor">${ICONS.bookmark}</svg>
-          </button>
-          <a class="ldp-fbtn ldp-f-open" href="#" target="_blank" rel="noopener" title="打开原贴">
-            <svg viewBox="0 0 24 24" fill="currentColor">${ICONS.newTab}</svg>
-          </a>
-        </div>
-      </div>`;
+      </header><div class="ldp-shell-host"></div><button class="ldp-new-posts" hidden></button></div>`;
     document.body.appendChild(overlay);
-    CURRENT_OVERLAY = overlay;
-
-    const modal = overlay.querySelector('.ldp-modal'), body = overlay.querySelector('.ldp-body');
-    const topicEl = overlay.querySelector('.ldp-topic'), commentsEl = overlay.querySelector('.ldp-comments');
-    const countEl = overlay.querySelector('.ldp-comments-count'), emptyEl = overlay.querySelector('.ldp-comments-empty');
-    const upSentinel = overlay.querySelector('.ldp-up-sentinel');
-    const downSentinel = overlay.querySelector('.ldp-down-sentinel');
-    const maskEl = overlay.querySelector('.ldp-loadmask');
-    const loadUpTip = overlay.querySelector('.ldp-load-up-tip');
-    const loadDownTip = overlay.querySelector('.ldp-load-down-tip');
-    const footerEl = overlay.querySelector('.ldp-footer');
-    const fLikeBtn = overlay.querySelector('.ldp-f-like'), fLikeCountEl = overlay.querySelector('.ldp-f-like-count');
-    const fReplyBtn = overlay.querySelector('.ldp-f-reply'), fReplyCountEl = overlay.querySelector('.ldp-f-reply-count');
-    const fBoostBtn = overlay.querySelector('.ldp-f-boost'), fBookmarkBtn = overlay.querySelector('.ldp-f-bookmark');
-    const fOpenLink = overlay.querySelector('.ldp-f-open');
-    const stopBase64Selection = bindModalBase64Selection(modal);
-
-    const loader = createLoader(topicId, abortController.signal);
-    const modalObsidianActions = createObsidianActionGroup(topicId, () => loader.topic);
-    overlay.querySelector('.ldp-head-btns').insertBefore(
-      modalObsidianActions,
-      overlay.querySelector('.ldp-close'),
-    );
-    const tracker = createReadTracker(topicId, body);
-    const ctx = {
-      topicId, op: null, topicEl, commentsEl, countEl, emptyEl, scrollRoot: body,
-      nodeMap: new Map(), pending: [], tracker, totalComments: 0, repliesIO: null,
-      subReplyState: new Map(), // 楼中楼原始数据 + 已渲染数量的状态表
-      subReplyCache: new Map(), // 按 postId 缓存楼中楼响应，窗口切换后可直接复用
-      windowEpoch: 0,
-      footerReplyCountEl: fReplyCountEl, // 底部悬浮操作栏的评论数展示
-      onPostsChanged: null,
-      signal: abortController.signal,
+    const modal = overlay.querySelector('.ldp-modal');
+    const app = {
+      overlay, modal, topicId: null, targetPostNumber: 1, topic: null, loader: null,
+      controller: null, virtualFlow: null, tracker: null, timeline: null, stopBase64: null,
+      repliesIO: null, refreshTimer: null, panelAbort: null, historyNavigation: null, onlyOp: false, closed: false,
+      loadTopic: null, close: null,
     };
-    ctx.repliesIO = createRepliesIO(ctx);
 
-    let closed = false;
-    let isAnchoring = true;
-    let loadingUp = false, loadingDown = false;
-    let upDone = false, downDone = false;
-    let upPromise = Promise.resolve(false), downPromise = Promise.resolve(false);
-    let upIO = null, downIO = null;
-    let timelineController = null;
-    let renderedRangeStart = 0, renderedRangeEnd = 0;
-    let activeUpRequest = null, activeDownRequest = null, activeSeekRequest = null;
+    const cleanupTopic = () => {
+      clearInterval(app.refreshTimer); app.refreshTimer = null;
+      if (app.controller) app.controller.abort();
+      if (app.virtualFlow) app.virtualFlow.destroy();
+      if (app.repliesIO) app.repliesIO.disconnect();
+      if (app.timeline) app.timeline.destroy();
+      if (app.tracker) app.tracker.stop();
+      if (app.loader) app.loader.destroy();
+      if (app.stopBase64) app.stopBase64();
+      app.controller = app.virtualFlow = app.timeline = app.tracker = app.repliesIO = app.loader = app.stopBase64 = null;
+      flushHistoryEntries();
+    };
 
-    const close = () => {
-      if (closed) return;
-      closed = true;
-      closeUserCard();
-      abortController.abort();
-      stopBase64Selection();
-      tracker.stop();
-      ctx.repliesIO.disconnect();
-      if (upIO) upIO.disconnect();
-      if (downIO) downIO.disconnect();
-      if (timelineController) timelineController.destroy();
+    app.close = () => {
+      if (app.closed) return;
+      app.closed = true;
+      closeReaderPanel(app); closeUserCard(); cleanupTopic();
+      document.removeEventListener('keydown', onKeyDown);
       overlay.remove();
       if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null;
-      if (CURRENT_MODAL_CLOSE === close) CURRENT_MODAL_CLOSE = null;
-      document.removeEventListener('keydown', onEsc);
+      if (CURRENT_MODAL_CLOSE === app.close) CURRENT_MODAL_CLOSE = null;
+      if (READER_APP === app) READER_APP = null;
     };
-    CURRENT_MODAL_CLOSE = close;
-    function onEsc(e) {
-      if (e.key !== 'Escape') return;
-      if (document.querySelector('.ldp-lightbox') || CURRENT_USER_CARD) return;
-      close();
+    function onKeyDown(event) {
+      if (event.key !== 'Escape' || document.querySelector('.ldp-lightbox') || CURRENT_USER_CARD) return;
+      if (modal.querySelector('.ldp-reader-panel')) closeReaderPanel(app); else app.close();
     }
-    overlay.querySelector('.ldp-close').addEventListener('click', close);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-    document.addEventListener('keydown', onEsc);
+    document.addEventListener('keydown', onKeyDown);
+    overlay.addEventListener('click', (event) => { if (event.target === overlay) app.close(); });
+    modal.querySelector('.ldp-close').addEventListener('click', app.close);
 
-    const sentinelVisible = (sentinel) => {
-      const bodyRect = body.getBoundingClientRect();
-      const sentinelRect = sentinel.getBoundingClientRect();
-      return sentinelRect.top <= bodyRect.bottom + 300 && sentinelRect.bottom >= bodyRect.top - 300;
-    };
-
-    const updateBoundaryTips = () => {
-      let topTip = body.querySelector('.ldp-top-tip');
-      if (upDone && !topTip) {
-        topTip = document.createElement('div');
-        topTip.className = 'ldp-top-tip';
-        topTip.textContent = '已是最早的评论';
-        loadUpTip.insertAdjacentElement('beforebegin', topTip);
-      } else if (!upDone && topTip) {
-        topTip.remove();
+    const navigateHistory = (delta) => {
+      if (!app.historyNavigation) {
+        const entries = getHistoryEntries();
+        app.historyNavigation = {
+          entries,
+          index: entries.findIndex((item) => String(item.topicId) === String(app.topicId)),
+        };
       }
+      const nextIndex = app.historyNavigation.index + delta;
+      const target = app.historyNavigation.entries[nextIndex];
+      if (!target) return;
+      app.historyNavigation.index = nextIndex;
+      app.loadTopic(target.topicId, target.lastPostNumber, { historyNavigation: true });
+    };
 
-      let bottomTip = body.querySelector('.ldp-bottom-tip');
-      if (downDone) {
-        if (!bottomTip) {
-          bottomTip = document.createElement('div');
-          bottomTip.className = 'ldp-bottom-tip';
-          loadDownTip.insertAdjacentElement('afterend', bottomTip);
-        }
-        bottomTip.textContent = upDone ? '已加载全部评论' : '已加载到最新回复';
-      } else if (bottomTip) {
-        bottomTip.remove();
+    modal.querySelector('.ldp-toolbar').addEventListener('click', async (event) => {
+      const button = event.target.closest('[data-reader-action]');
+      if (!button) return;
+      const action = button.dataset.readerAction;
+      if (action === 'history') showHistoryPanel(app);
+      else if (action === 'collections') showCollectionPanel(app);
+      else if (action === 'previous') navigateHistory(1);
+      else if (action === 'next') navigateHistory(-1);
+      else if (action === 'only-op' && app.virtualFlow) {
+        button.disabled = true;
+        app.onlyOp = !app.onlyOp;
+        button.classList.toggle('active', app.onlyOp);
+        try { await app.virtualFlow.setOnlyOp(app.onlyOp); }
+        finally { button.disabled = false; }
+      } else if (action === 'refresh' && app.topicId) {
+        const id = app.topicId, target = (app.virtualFlow && app.virtualFlow.getCurrentPost() || {}).post_number || app.targetPostNumber;
+        await invalidateTopicSnapshot(id); app.loadTopic(id, target, { forceNetwork: true });
       }
-    };
+    });
 
-    const notifyPostsChanged = () => {
-      reflowPending(ctx);
-      if (ctx.onPostsChanged) ctx.onPostsChanged();
-      updateBoundaryTips();
-    };
+    modal.querySelector('.ldp-new-posts').addEventListener('click', () => {
+      const target = Number(modal.querySelector('.ldp-new-posts').dataset.postNumber) || 1;
+      app.loadTopic(app.topicId, target, { forceNetwork: true });
+    });
 
-    const createRequestHandle = () => {
+    app.loadTopic = async (topicId, targetPostNumber, options) => {
+      cleanupTopic(); closeReaderPanel(app); closeUserCard();
+      if (!(options && options.historyNavigation)) app.historyNavigation = null;
+      app.topicId = String(topicId); app.targetPostNumber = Number(targetPostNumber) || 0; app.onlyOp = false;
+      modal.querySelector('[data-reader-action="only-op"]').classList.remove('active');
+      modal.querySelector('.ldp-title').innerHTML = '<span class="ldp-sk ldp-sk-title"></span>';
+      modal.querySelector('.ldp-meta').innerHTML = '<span class="ldp-sk ldp-sk-meta"></span><span class="ldp-topic-taxonomy"></span>';
+      modal.querySelector('.ldp-title-context').hidden = true;
+      modal.querySelector('.ldp-new-posts').hidden = true;
+      modal.querySelector('.ldp-f-open').href = `${BASE}/t/${topicId}`;
+      const shellHost = modal.querySelector('.ldp-shell-host');
+      shellHost.innerHTML = `<div class="ldp-shell"><div class="ldp-body"><div class="ldp-topic"></div>
+        <div class="ldp-comments-header">回应<span class="ldp-comments-count"></span></div><div class="ldp-comments"></div>
+        <div class="ldp-loadmask">${SKELETON_HTML}</div></div>
+        <aside class="ldp-timeline" aria-label="帖子时间轴"><button class="ldp-tl-date ldp-tl-top-date">顶部</button>
+          <div class="ldp-tl-current"><strong class="ldp-tl-current-post">1 / 1</strong><span class="ldp-tl-current-date">当前</span></div>
+          <button class="ldp-tl-track" role="slider" aria-label="滚动位置"><span class="ldp-tl-fill"></span><span class="ldp-tl-thumb"></span></button>
+          <button class="ldp-tl-date ldp-tl-bottom-date">底部</button></aside></div>`;
+      const shell = shellHost.querySelector('.ldp-shell');
+      const body = shell.querySelector('.ldp-body');
+      const topicEl = shell.querySelector('.ldp-topic');
+      const commentsEl = shell.querySelector('.ldp-comments');
+      const mask = shell.querySelector('.ldp-loadmask');
       const controller = new AbortController();
-      if (abortController.signal.aborted) {
-        controller.abort();
-        return { controller, signal: controller.signal, dispose() {} };
-      }
-      const relayAbort = () => controller.abort();
-      abortController.signal.addEventListener('abort', relayAbort, { once: true });
-      return {
-        controller,
-        signal: controller.signal,
-        dispose() {
-          abortController.signal.removeEventListener('abort', relayAbort);
-        },
+      app.controller = controller;
+      const loader = createLoaderV2(topicId, controller.signal);
+      app.loader = loader;
+      const tracker = createReadTracker(topicId, body);
+      app.tracker = tracker;
+      const ctx = {
+        topicId, op: null, topicEl, commentsEl, countEl: shell.querySelector('.ldp-comments-count'), emptyEl: null,
+        scrollRoot: body, nodeMap: new Map(), pending: [], tracker, totalComments: 0,
+        subReplyState: new Map(), subReplyCache: new Map(), windowEpoch: 1,
+        onPostsChanged: null, onMutation: () => { if (app.timeline) app.timeline.refresh(); },
+        signal: controller.signal, loader, topic: null, repliesIO: null,
       };
-    };
-
-    const syncWindowState = () => {
-      upDone = loader.topReached;
-      downDone = loader.bottomReached;
-    };
-
-    const setRenderedRange = (start, end) => {
-      renderedRangeStart = Math.max(0, Number(start) || 0);
-      renderedRangeEnd = Math.max(renderedRangeStart, Math.min(loader.streamLength, Number(end) || 0));
-      syncWindowState();
-    };
-
-    const trimOverflow = async (direction) => {
-      const span = renderedRangeEnd - renderedRangeStart;
-      if (span <= MAX_RENDERED_POSTS) return;
-      if (direction === 'append') {
-        const keepStart = Math.max(renderedRangeStart, renderedRangeEnd - MAX_RENDERED_POSTS);
-        const anchor = captureScrollAnchor(body);
-        trimRenderedRange(ctx, loader, keepStart, renderedRangeEnd);
-        renderedRangeStart = keepStart;
-        await restoreScrollAnchor(body, anchor);
-      } else {
-        const keepEnd = Math.min(renderedRangeEnd, renderedRangeStart + MAX_RENDERED_POSTS);
-        trimRenderedRange(ctx, loader, renderedRangeStart, keepEnd);
-        renderedRangeEnd = keepEnd;
-      }
-      syncWindowState();
-    };
-
-    const abortIncrementalLoads = () => {
-      if (activeUpRequest) activeUpRequest.controller.abort();
-      if (activeDownRequest) activeDownRequest.controller.abort();
-    };
-
-    const commitPreparedWindow = async (result, locateOptions) => {
-      clearCommentsWindow(ctx);
-      insertPostsBatch(result.posts, ctx, 'append');
-      loader.activateWindow(result);
-      setRenderedRange(result.start, result.end);
-      notifyPostsChanged();
-      await locatePost(result.targetPostNumber, ctx, locateOptions || { behavior: 'auto' });
-    };
-
-    const pumpDown = () => {
-      if (isAnchoring || loadingDown || downDone || closed) return downPromise;
-      loadingDown = true;
-      loadDownTip.classList.add('show');
-      const request = createRequestHandle();
-      activeDownRequest = request;
-      downPromise = (async () => {
-        try {
-          const result = await loader.prepareDown(request.signal);
-          if (closed || request.signal.aborted) return false;
-          insertPostsBatch(result.posts, ctx, 'append');
-          loader.activateDown(result);
-          renderedRangeEnd = result.end;
-          await trimOverflow('append');
-          syncWindowState();
-          notifyPostsChanged();
-          return result.posts.length > 0 || result.done;
-        } catch (err) {
-          if (err && err.name === 'AbortError') return false;
-          return false;
-        } finally {
-          if (activeDownRequest === request) activeDownRequest = null;
-          request.dispose();
-          loadingDown = false;
-          loadDownTip.classList.remove('show');
+      ctx.repliesIO = createRepliesIO(ctx);
+      app.repliesIO = ctx.repliesIO;
+      try {
+        const topic = await loader.init(targetPostNumber, options);
+        if (controller.signal.aborted) return;
+        app.topic = topic;
+        ctx.topic = topic;
+        ctx.op = topic._opUsername;
+        ctx.totalComments = Math.max(0, Number(topic.posts_count || topic.highest_post_number || 1) - 1);
+        ctx.lastReadPostNumber = Number(topic.last_read_post_number) || 0;
+        tracker.setReadWaterline(ctx.lastReadPostNumber);
+        modal.querySelector('.ldp-title').textContent = topic.title || `主题 ${topicId}`;
+        const renderTaxonomy = (categoryName) => {
+          const taxonomy = [];
+          if (categoryName && categoryName !== '未分类') taxonomy.push(`<span class="ldp-topic-chip">${esc(categoryName)}</span>`);
+          (topic.tags || []).slice(0, 5).forEach((tag) => taxonomy.push(`<span class="ldp-topic-chip">#${esc(typeof tag === 'string' ? tag : tag.name)}</span>`));
+          const target = modal.querySelector('.ldp-topic-taxonomy');
+          if (target) target.innerHTML = taxonomy.join('');
+        };
+        const category = topic.category_name || (topic.category && topic.category.name);
+        modal.querySelector('.ldp-meta').innerHTML = `<span>${Number(topic.posts_count) || 1} 帖 · ${Number(topic.views) || 0} 浏览 · 楼主 @${esc(ctx.op || '?')}</span><span class="ldp-topic-taxonomy"></span>`;
+        renderTaxonomy(category);
+        if (!category && topic.category_id) {
+          getObsidianCategoryName(topic).then((name) => {
+            if (!controller.signal.aborted && String(app.topicId) === String(topicId)) renderTaxonomy(name);
+          }).catch(() => {});
         }
-      })();
-      return downPromise;
-    };
-
-    const pumpUp = () => {
-      if (isAnchoring || loadingUp || upDone || closed || body.scrollTop <= 1) return upPromise;
-      loadingUp = true;
-      loadUpTip.classList.add('show');
-      const request = createRequestHandle();
-      activeUpRequest = request;
-      upPromise = (async () => {
-        try {
-          const oldHeight = body.scrollHeight;
-          const oldTop = body.scrollTop;
-          const result = await loader.prepareUp(request.signal);
-          const loadedPosts = result.posts;
-          if (closed || request.signal.aborted) return false;
-
-          if (loadedPosts.length) {
-            insertPostsBatch(loadedPosts, ctx, 'prepend');
-            await new Promise((resolve) => requestAnimationFrame(() => {
-              body.scrollTop = oldTop + (body.scrollHeight - oldHeight);
-              resolve();
-            }));
-          }
-
-          loader.activateUp(result);
-          renderedRangeStart = result.start;
-          await trimOverflow('prepend');
-          syncWindowState();
-          notifyPostsChanged();
-          return loadedPosts.length > 0 || result.done;
-        } catch (err) {
-          if (err && err.name === 'AbortError') return false;
-          return false;
-        } finally {
-          if (activeUpRequest === request) activeUpRequest = null;
-          request.dispose();
-          loadingUp = false;
-          loadUpTip.classList.remove('show');
+        shell.querySelector('.ldp-comments-count').textContent = `（${ctx.totalComments}）`;
+        if (topic._opPost) {
+          const opNode = renderPost(topic._opPost, false, ctx);
+          topicEl.appendChild(opNode); tracker.observe(opNode);
         }
-      })();
-      return upPromise;
-    };
-
-    try {
-      const topic = await loader.init();
-      if (closed) return;
-      ctx.lastReadPostNumber = Number(topic.last_read_post_number) || 0;
-      tracker.setReadWaterline(ctx.lastReadPostNumber);
-      ctx.op = topic._opUsername; ctx.totalComments = Math.max(0, (topic.posts_count || 1) - 1);
-      overlay.querySelector('.ldp-title').textContent = topic.title;
-      overlay.querySelector('.ldp-meta').textContent = `${topic.posts_count} 帖 · ${topic.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
-      updateCommentsHeader(ctx);
-
-      if (topic._opPost) attachPost(topic._opPost, ctx);
-
-      fOpenLink.href = `${BASE}/t/${topic.id}`;
-      bindBookmark(fBookmarkBtn, topic);
-      bindFooterLike(fLikeBtn, fLikeCountEl, topic._opPost);
-
-      const hasOpPost = !!topic._opPost;
-      const canBoostOp = hasOpPost && topic._opPost.can_boost === true;
-      if (!canBoostOp) {
-        fBoostBtn.disabled = true;
-        fBoostBtn.style.opacity = '0.4';
-      }
-      fBoostBtn.addEventListener('click', () => {
-        if (fBoostBtn.disabled) return;
-        const opNode = ctx.topicEl.querySelector('.ldp-post');
-        if (!opNode) return;
-        const wrap = opNode.querySelector(':scope > .ldp-boost-input-wrap');
-        if (!wrap) return;
-        const opening = !wrap.classList.contains('open');
-        wrap.classList.toggle('open', opening);
-        if (opening) {
-          wrap.querySelector('.ldp-boost-input').focus();
-          wrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      });
-      fBookmarkBtn.before(fBoostBtn);
-
-      fReplyBtn.addEventListener('click', () => {
-        const opNode = ctx.topicEl.querySelector('.ldp-post');
-        if (!opNode) return;
-        const box = ensureReplyBox(opNode);
-        box.classList.toggle('open');
-        if (box.classList.contains('open')) {
-          box.querySelector('textarea').focus();
-          box.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-      });
-      footerEl.hidden = false;
-
-      const resolvedTarget = resolveInitialTarget(topic, targetPostNumber);
-
-      const initial = await loader.prepareWindowByPostNumber(resolvedTarget, abortController.signal);
-      if (closed) return;
-      insertPostsBatch(initial.posts, ctx, 'append');
-      loader.activateWindow(initial);
-      setRenderedRange(initial.start, initial.end);
-      renderTopicLevel(topic, overlay, abortController.signal).catch(() => {});
-
-      const controls = {
-        getStreamLength() {
-          return loader.streamLength;
-        },
-        getStreamIndex(postId) {
-          return loader.getStreamIndex(postId);
-        },
-        async seekToIndex(index, desiredPostNumber) {
-          if (closed) return false;
-          if (activeSeekRequest) activeSeekRequest.controller.abort();
-
-          const maxIndex = Math.max(0, loader.streamLength - 1);
-          const safeIndex = Math.max(0, Math.min(maxIndex, Number(index) || 0));
-          const cachedTarget = loader.getCachedByIndex(safeIndex);
-          const localTargetPostNumber = Number(desiredPostNumber)
-            || (cachedTarget && cachedTarget.post_number)
-            || 1;
-          const smoothBehavior = (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
-            ? 'auto'
-            : 'smooth';
-
-          if (
-            !activeSeekRequest
-            && localTargetPostNumber <= 1
-            && renderedRangeStart === 0
-            && body.scrollTop <= body.clientHeight
-          ) {
-            return locatePost(1, ctx, { behavior: smoothBehavior });
-          }
-
-          if (
-            !activeSeekRequest
-            && safeIndex >= renderedRangeStart
-            && safeIndex < renderedRangeEnd
-            && await locatePost(localTargetPostNumber, ctx, { behavior: smoothBehavior })
-          ) {
-            return true;
-          }
-
-          abortIncrementalLoads();
-          const request = createRequestHandle();
-          activeSeekRequest = request;
-          ctx.windowEpoch += 1;
-          const requestEpoch = ctx.windowEpoch;
-          isAnchoring = true;
-          try {
-            const result = desiredPostNumber
-              ? await loader.prepareWindowByPostNumber(desiredPostNumber, request.signal)
-              : await loader.prepareWindowByIndex(safeIndex, request.signal);
-            if (closed || request.signal.aborted || ctx.windowEpoch !== requestEpoch) return false;
-            await commitPreparedWindow(result, { behavior: 'auto' });
-            return true;
-          } catch (err) {
-            if (err && err.name === 'AbortError') return false;
-            throw err;
-          } finally {
-            if (activeSeekRequest === request) {
-              activeSeekRequest = null;
-              isAnchoring = false;
+        const obsidianHost = modal.querySelector('.ldp-obsidian-host');
+        obsidianHost.replaceChildren(createObsidianActionGroup(topicId, () => app.topic));
+        const oldBookmark = modal.querySelector('[data-reader-action="topic-bookmark"]');
+        const bookmark = oldBookmark.cloneNode(true); oldBookmark.replaceWith(bookmark); bindBookmark(bookmark, topic);
+        renderTopicLevel(topic, modal, controller.signal).catch(() => {});
+        app.stopBase64 = bindModalBase64Selection(shell);
+        bindActions(shell, ctx);
+        tracker.start();
+        const target = await loader.resolveTarget(resolveInitialTarget(topic, targetPostNumber), controller.signal);
+        if (controller.signal.aborted) return;
+        const virtualFlow = createVirtualFlow(loader, ctx);
+        app.virtualFlow = virtualFlow;
+        const controls = {
+          getStreamLength: () => loader.streamLength,
+          getTotalPosts: () => Number((loader.topic && (loader.topic.highest_post_number || loader.topic.posts_count)) || ctx.totalComments + 1),
+          getStreamIndex: (postId) => loader.getStreamIndex(postId),
+          seekToIndex: async (index, postNumber) => {
+            if (Number(postNumber) <= 1) { body.scrollTo({ top: 0, behavior: 'smooth' }); return true; }
+            if (postNumber && !loader.getCachedByIndex(index)) {
+              const resolved = await loader.resolveTarget(postNumber, controller.signal);
+              return virtualFlow.seekToIndex(resolved.index, resolved.postNumber, { smooth: false });
             }
-            request.dispose();
-          }
-        },
-      };
+            return virtualFlow.seekToIndex(index, postNumber, { smooth: true });
+          },
+        };
+        app.timeline = bindTimeline(shell, ctx, topic, controls);
+        ctx.onPostsChanged = app.timeline.refresh;
+        await virtualFlow.mountInitial(target);
+        if (controller.signal.aborted) return;
+        mask.classList.add('hide'); setTimeout(() => mask.remove(), 260);
+        rememberTopicHistory(topic, target.postNumber);
+        if (loader.refreshPromise) loader.refreshPromise.then((latest) => {
+          if (!latest || controller.signal.aborted || String(app.topicId) !== String(topicId)) return;
+          app.topic = latest; ctx.topic = latest; ctx.op = latest._opUsername || ctx.op;
+          ctx.totalComments = Math.max(0, Number(latest.posts_count || latest.highest_post_number || 1) - 1);
+          modal.querySelector('.ldp-title').textContent = latest.title || `主题 ${topicId}`;
+          const meta = modal.querySelector('.ldp-meta > span:first-child');
+          if (meta) meta.textContent = `${Number(latest.posts_count) || 1} 帖 · ${Number(latest.views) || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
+          shell.querySelector('.ldp-comments-count').textContent = `（${ctx.totalComments}）`;
+          const taxonomy = [];
+          const categoryName = latest.category_name || (latest.category && latest.category.name);
+          if (categoryName && categoryName !== '未分类') taxonomy.push(`<span class="ldp-topic-chip">${esc(categoryName)}</span>`);
+          (latest.tags || []).slice(0, 5).forEach((tag) => taxonomy.push(`<span class="ldp-topic-chip">#${esc(typeof tag === 'string' ? tag : tag.name)}</span>`));
+          const taxonomyNode = modal.querySelector('.ldp-topic-taxonomy');
+          if (taxonomyNode) taxonomyNode.innerHTML = taxonomy.join('');
+        }).catch(() => {});
+        app.refreshTimer = setInterval(async () => {
+          if (document.visibilityState !== 'visible' || controller.signal.aborted) return;
+          try {
+            const latest = await fetchJSON(`${BASE}/t/${topicId}.json`, {
+              signal: controller.signal, priority: 'background', dedupeKey: `new-posts:${BASE}:${topicId}:${Date.now() >> 15}`,
+            });
+            const currentTopic = loader.topic || topic;
+            const currentHighest = Number(currentTopic.highest_post_number || currentTopic.posts_count || 1);
+            const nextHighest = Number(latest.highest_post_number || latest.posts_count || 1);
+            if (nextHighest > currentHighest) {
+              const notice = modal.querySelector('.ldp-new-posts');
+              notice.textContent = `${nextHighest - currentHighest} 条新回应`;
+              notice.dataset.postNumber = String(nextHighest); notice.hidden = false;
+            }
+          } catch (error) { /* 后台检查失败不打断阅读 */ }
+        }, 45000);
+      } catch (error) {
+        if (error && error.name === 'AbortError') return;
+        mask.remove(); body.innerHTML = `<div class="ldp-error">加载失败：${esc(error.message)}</div>`;
+      }
+    };
 
-      timelineController = bindTimeline(modal, ctx, topic, controls);
-      ctx.onPostsChanged = timelineController.refresh;
+    CURRENT_OVERLAY = overlay;
+    CURRENT_MODAL_CLOSE = app.close;
+    return app;
+  }
 
-      bindActions(modal, ctx);
-      tracker.start();
-
-      upIO = new IntersectionObserver((entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) pumpUp();
-      }, { root: body, rootMargin: '300px 0px' });
-      downIO = new IntersectionObserver((entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) pumpDown();
-      }, { root: body, rootMargin: '300px 0px' });
-      upIO.observe(upSentinel);
-      downIO.observe(downSentinel);
-
-      maskEl.classList.add('hide');
-      setTimeout(() => maskEl.remove(), 300);
-
-      await locatePost(initial.targetPostNumber, ctx, { behavior: 'auto' });
-      isAnchoring = false;
-      updateBoundaryTips();
-
-      if (sentinelVisible(upSentinel)) pumpUp();
-      if (sentinelVisible(downSentinel)) pumpDown();
-    } catch (err) {
-      if (err && err.name === 'AbortError') return;
-      if (maskEl) maskEl.remove();
-      body.innerHTML = `<div class="ldp-error">加载失败：${esc(err.message)}</div>`;
-    }
+  function openModalV2(topicId, targetPostNumber) {
+    closeUserCard();
+    if (!READER_APP || READER_APP.closed || !READER_APP.overlay.isConnected) READER_APP = createReaderApp();
+    return READER_APP.loadTopic(topicId, targetPostNumber);
   }
 
   /* ============ 14. 拦截标题 / 通知点击 ============ */
@@ -3785,7 +4825,7 @@
     if (!parsed) return;
     e.preventDefault(); e.stopPropagation();
     const directTarget = inMenu && parsed.targetPostNumber ? parsed.targetPostNumber : 0;
-    openModal(parsed.topicId, directTarget);
+    openModalV2(parsed.topicId, directTarget);
   }, true);
 
   startBase64MenuObserver();
