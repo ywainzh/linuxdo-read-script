@@ -27,13 +27,15 @@ function post(postNumber) {
 
 function topicPayload(extraPosts = [post(1)], options = {}) {
   const count = options.postCount || POST_COUNT;
+  const posts = extraPosts.map((item) => Number(item.post_number) === 1 && options.opCooked
+    ? Object.assign({}, item, { cooked: options.opCooked }) : item);
   return {
     id: TOPIC_ID,
     title: 'Reader 2.0 performance topic',
     posts_count: count,
     highest_post_number: count,
     views: 8123,
-    last_read_post_number: 10,
+    last_read_post_number: options.lastReadPostNumber === undefined ? 10 : options.lastReadPostNumber,
     created_at: '2026-01-01T00:00:00.000Z',
     last_posted_at: '2026-01-02T00:00:00.000Z',
     category_name: 'Development',
@@ -41,7 +43,7 @@ function topicPayload(extraPosts = [post(1)], options = {}) {
     valid_reactions: options.validReactions || ['heart', '+1', 'fire'],
     details: { created_by: { username: 'owner' } },
     post_stream: {
-      posts: extraPosts,
+      posts,
       stream: Array.from({ length: count }, (_, index) => postId(index + 1)),
     },
   };
@@ -58,7 +60,7 @@ async function bootReader(page, options = {}) {
       await route.fulfill({
         contentType: 'text/html',
         body: `<!doctype html><html><head><meta name="csrf-token" content="test-csrf"><link rel="icon" href="/icon.png"></head><body>
-          <div class="notifications"><a class="raw-topic-link" href="/t/reader/${TOPIC_ID}/${options.target || POST_COUNT}">Open topic</a></div>
+          <div class="notifications"><a class="raw-topic-link" href="/t/reader/${TOPIC_ID}${options.noTarget ? '' : `/${options.target || POST_COUNT}`}">Open topic</a></div>
         </body></html>`,
       });
       return;
@@ -75,7 +77,8 @@ async function bootReader(page, options = {}) {
       const target = Number(url.searchParams.get('post_number'));
       const postCount = (options.topicState && options.topicState.postCount) || POST_COUNT;
       requests.push({ type: target ? 'anchor' : 'topic', target, at: Date.now() });
-      await route.fulfill({ json: target ? topicPayload([post(target)], { postCount }) : topicPayload(undefined, { postCount }) });
+      const topicOptions = Object.assign({ postCount }, options.topicState || {});
+      await route.fulfill({ json: target ? topicPayload([post(target)], topicOptions) : topicPayload(undefined, topicOptions) });
       return;
     }
     if (url.pathname === `/t/${TOPIC_ID}/posts.json`) {
@@ -93,6 +96,9 @@ async function bootReader(page, options = {}) {
         return;
       }
       const missing = Number(options.missingPostNumber) || 0;
+      const postsDelay = typeof options.postsDelay === 'function'
+        ? Number(options.postsDelay(ids)) || 0 : Number(options.postsDelay) || 0;
+      if (postsDelay > 0) await new Promise((resolve) => setTimeout(resolve, postsDelay));
       await route.fulfill({ json: { post_stream: { posts: ids.filter((id) => id !== postId(missing)).map((id) => post(id - 100000)) } } });
       return;
     }
@@ -106,6 +112,9 @@ async function bootReader(page, options = {}) {
         return reply;
       });
       requests.push({ type: 'replies', parentId, at: Date.now() });
+      if (Number(options.repliesDelay) > 0) {
+        await new Promise((resolve) => setTimeout(resolve, Number(options.repliesDelay)));
+      }
       await route.fulfill({ json: replies });
       return;
     }
@@ -209,9 +218,11 @@ async function bootReader(page, options = {}) {
   await page.addScriptTag({ content: SCRIPT });
   await page.click('.raw-topic-link');
   await expect(page.locator('.ldp-v2 .ldp-title')).toHaveText('Reader 2.0 performance topic');
-  const target = page.locator(`.ldp-virtual-window > .ldp-post[data-post-number="${options.target || POST_COUNT}"]`);
-  await expect(target).toBeVisible();
-  await expect(target).toBeInViewport();
+  if (!options.skipTargetAssertion) {
+    const target = page.locator(`.ldp-virtual-window > .ldp-post[data-post-number="${options.target || POST_COUNT}"]`);
+    await expect(target).toBeVisible();
+    await expect(target).toBeInViewport();
+  }
   return requests;
 }
 
@@ -229,6 +240,21 @@ test('returns from a distant floor to the real top of the reader', async ({ page
   await bootReader(page);
   await page.locator('.ldp-tl-top-date').click();
   await expect.poll(() => page.locator('.ldp-body').evaluate((node) => node.scrollTop)).toBe(0);
+  await expect(page.locator('.ldp-tl-current-post')).toHaveText(`1 / ${POST_COUNT}`);
+});
+
+test('opens a long first post at the real top when there is no explicit floor', async ({ page }) => {
+  await bootReader(page, {
+    noTarget: true,
+    skipTargetAssertion: true,
+    topicState: {
+      lastReadPostNumber: 0,
+      opCooked: '<div data-long-op style="height:2400px">Long first post</div>',
+    },
+  });
+  const body = page.locator('.ldp-body');
+  await expect.poll(() => body.evaluate((node) => node.scrollTop)).toBe(0);
+  await expect(page.locator('[data-long-op]')).toBeInViewport();
   await expect(page.locator('.ldp-tl-current-post')).toHaveText(`1 / ${POST_COUNT}`);
 });
 
@@ -258,10 +284,142 @@ test('preserves the visible anchor when an earlier image changes height', async 
   await bootReader(page);
   const target = page.locator('.ldp-post[data-post-number="2000"]').first();
   const before = await target.evaluate((node) => node.getBoundingClientRect().top);
-  await page.locator('[data-test-image]').evaluate((image) => { image.style.height = '220px'; });
+  await page.locator('[data-test-image]').evaluate((image) => {
+    image.style.height = '80px';
+    image.style.height = '140px';
+    image.style.height = '220px';
+  });
   await page.waitForTimeout(150);
   const after = await target.evaluate((node) => node.getBoundingClientRect().top);
   expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
+});
+
+test('keeps the current floor fixed while delayed direct replies are inserted above it', async ({ page }) => {
+  const requests = await bootReader(page, { target: 10, repliesCount: 15, repliesDelay: 800 });
+  const target = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="10"]');
+  await page.waitForTimeout(550);
+  await target.evaluate((node) => node.scrollIntoView({ block: 'start' }));
+  await page.waitForTimeout(30);
+  const visibleAnchor = await page.locator('.ldp-body').evaluate((body) => {
+    const root = body.getBoundingClientRect();
+    const nodes = Array.from(body.querySelector('.ldp-virtual-window').children);
+    const node = nodes.find((item) => {
+      const rect = item.getBoundingClientRect();
+      return rect.bottom > root.top + 1 && rect.top < root.bottom - 1;
+    });
+    return Number(node && node.dataset.postNumber);
+  });
+  expect(visibleAnchor).toBe(10);
+  const before = await target.evaluate((node) => node.getBoundingClientRect().top);
+  await expect.poll(() => requests.filter((item) => item.type === 'replies').length).toBeGreaterThan(0);
+  await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"] > .ldp-children > .ldp-post-copy')).toHaveCount(3);
+  const after = await target.evaluate((node) => node.getBoundingClientRect().top);
+  expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
+});
+
+test('does not commit an obsolete window during rapid delayed scrolling', async ({ page }) => {
+  await bootReader(page, {
+    target: 12,
+    postsDelay: (ids) => ids.some((id) => id >= postId(300) && id <= postId(700)) ? 300 : 30,
+  });
+  await page.locator('.ldp-virtual-window').evaluate((windowNode) => {
+    window.__mountedWindows = [];
+    const record = () => {
+      window.__mountedWindows.push(Array.from(windowNode.children)
+        .map((node) => Number(node.dataset.postNumber || 0)).filter(Boolean));
+    };
+    new MutationObserver(record).observe(windowNode, { childList: true });
+  });
+  const body = page.locator('.ldp-body');
+  await body.evaluate((node) => {
+    node.scrollTop = node.querySelector('.ldp-comments').offsetTop + 480 * 184;
+    node.dispatchEvent(new Event('scroll'));
+  });
+  await page.waitForTimeout(30);
+  await body.evaluate((node) => {
+    node.scrollTop = node.querySelector('.ldp-comments').offsetTop + 1600 * 184;
+    node.dispatchEvent(new Event('scroll'));
+  });
+  await expect.poll(() => page.locator('.ldp-virtual-window > .ldp-post').evaluateAll((nodes) =>
+    nodes.some((node) => Number(node.dataset.postNumber) > 1500))).toBeTruthy();
+  const mountedWindows = await page.evaluate(() => window.__mountedWindows || []);
+  expect(mountedWindows.some((numbers) => numbers.some((number) => number >= 300 && number <= 700))).toBeFalsy();
+  expect(await page.locator('.ldp-virtual-window > .ldp-post').count()).toBeLessThanOrEqual(72);
+});
+
+test('releases the seek anchor when the user wheels the reader', async ({ page }) => {
+  await bootReader(page, { target: 100 });
+  const body = page.locator('.ldp-body');
+  const box = await body.boundingBox();
+  const initialScrollTop = await body.evaluate((node) => node.scrollTop);
+  await page.mouse.move(box.x + Math.min(160, box.width / 2), box.y + box.height / 2);
+  await page.mouse.wheel(0, 600);
+  await expect.poll(() => body.evaluate((node) => node.scrollTop)).toBeGreaterThan(initialScrollTop);
+  const movedScrollTop = await body.evaluate((node) => node.scrollTop);
+  await page.locator('.ldp-virtual-window > .ldp-post').first().evaluate((node) => {
+    node.style.minHeight = `${node.getBoundingClientRect().height + 240}px`;
+  });
+  await page.waitForTimeout(180);
+  const finalScrollTop = await body.evaluate((node) => node.scrollTop);
+  expect(finalScrollTop).toBeGreaterThanOrEqual(movedScrollTop - 2);
+});
+
+test('keeps a small wheel step local after the native scrollbar jumps to the middle', async ({ page }) => {
+  await bootReader(page, { target: 12 });
+  const body = page.locator('.ldp-body');
+  const box = await body.boundingBox();
+  const draggedTop = await body.evaluate((node) => {
+    const commentsTop = node.querySelector('.ldp-comments').offsetTop;
+    node.scrollTop = commentsTop + 900 * 184;
+    node.dispatchEvent(new Event('scroll'));
+    return node.scrollTop;
+  });
+
+  await expect.poll(() => page.locator('.ldp-virtual-window > .ldp-post').evaluateAll((nodes) =>
+    nodes.some((node) => Number(node.dataset.postNumber) >= 850 && Number(node.dataset.postNumber) <= 950))).toBeTruthy();
+  const settledTop = await body.evaluate((node) => node.scrollTop);
+  const viewport = await body.evaluate((node) => node.clientHeight);
+  await page.mouse.move(box.x + box.width - 3, box.y + box.height / 2);
+  await page.mouse.wheel(0, 80);
+  await page.waitForTimeout(180);
+
+  const state = await body.evaluate((node) => ({
+    top: node.scrollTop,
+    max: node.scrollHeight - node.clientHeight,
+  }));
+  expect(Math.abs(settledTop - draggedTop)).toBeLessThan(viewport * 2);
+  expect(state.top - settledTop).toBeGreaterThanOrEqual(0);
+  expect(state.top - settledTop).toBeLessThan(viewport * 2);
+  expect(state.top).toBeLessThan(state.max - viewport);
+  expect(await page.locator('.ldp-virtual-window > .ldp-post').count()).toBeLessThanOrEqual(72);
+});
+
+test('does not jump to the final floor when wheeling beside a short topic scrollbar', async ({ page }) => {
+  await bootReader(page, {
+    target: 5,
+    topicState: { postCount: 28 },
+    repliesCount: 15,
+    repliesDelay: 250,
+  });
+  const body = page.locator('.ldp-body');
+  const box = await body.boundingBox();
+  const before = await body.evaluate((node) => ({
+    top: node.scrollTop,
+    max: node.scrollHeight - node.clientHeight,
+    viewport: node.clientHeight,
+  }));
+  await page.mouse.move(box.x + box.width - 3, box.y + box.height / 2);
+  await page.mouse.wheel(0, 80);
+  await page.waitForTimeout(500);
+
+  const after = await body.evaluate((node) => ({
+    top: node.scrollTop,
+    max: node.scrollHeight - node.clientHeight,
+  }));
+  expect(after.top - before.top).toBeGreaterThanOrEqual(0);
+  expect(after.top - before.top).toBeLessThan(before.viewport * 2);
+  expect(after.top).toBeLessThan(after.max - 2);
+  await expect(page.locator('.ldp-tl-current-post')).not.toHaveText('28 / 28');
 });
 
 test('reopens a fresh snapshot without refetching the floor slice', async ({ page }) => {

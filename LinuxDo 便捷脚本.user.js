@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      2.0.2
+// @version      2.0.3
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 高性能浮窗阅读帖子，支持虚拟楼层、历史收藏、互动、用户卡片和 Obsidian 快照。
 // @author       Fashion
@@ -153,7 +153,7 @@
     .ldp-shell{flex:1;min-height:0;position:relative;display:flex;}
     .ldp-body{flex:1;min-width:0;min-height:0;position:relative;
       padding:8px 20px 20px;overflow-y:auto;overscroll-behavior:contain;
-      scrollbar-width:none;}
+      scrollbar-width:none;overflow-anchor:none;}
     .ldp-body::-webkit-scrollbar{width:0;height:0;}
 
     /* 右侧时间轴 */
@@ -3027,23 +3027,27 @@
     const state = ctx.subReplyState.get(postNumber);
     const parentNode = ctx.nodeMap.get(postNumber) || ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`);
     if (!state || !parentNode) return;
-    const children = parentNode.querySelector(':scope > .ldp-children');
-    if (children) {
-      children.replaceChildren();
-      state.all.slice(0, state.renderedCount).forEach((reply) => {
-        const copy = renderPost(ctx.loader.getPostById(reply.id) || reply, true, ctx);
-        copy.classList.add('ldp-post-copy');
-        copy.setAttribute('aria-label', `#${reply.post_number} 的直属回复副本`);
-        children.appendChild(copy);
-      });
-    }
-    const actionEl = parentNode.querySelector(':scope > .ldp-sub-actions');
-    const btnEl = actionEl && actionEl.querySelector('.ldp-load-more-replies');
-    const remaining = state.all.length - state.renderedCount;
-    if (remaining > 0) {
-      if (actionEl) actionEl.style.display = 'block';
-      if (btnEl) btnEl.textContent = `展示更多回复（还剩 ${remaining} 条） ↓`;
-    } else if (actionEl) actionEl.style.display = 'none';
+    const mutate = () => {
+      const children = parentNode.querySelector(':scope > .ldp-children');
+      if (children) {
+        children.replaceChildren();
+        state.all.slice(0, state.renderedCount).forEach((reply) => {
+          const copy = renderPost(ctx.loader.getPostById(reply.id) || reply, true, ctx);
+          copy.classList.add('ldp-post-copy');
+          copy.setAttribute('aria-label', `#${reply.post_number} 的直属回复副本`);
+          children.appendChild(copy);
+        });
+      }
+      const actionEl = parentNode.querySelector(':scope > .ldp-sub-actions');
+      const btnEl = actionEl && actionEl.querySelector('.ldp-load-more-replies');
+      const remaining = state.all.length - state.renderedCount;
+      if (remaining > 0) {
+        if (actionEl) actionEl.style.display = 'block';
+        if (btnEl) btnEl.textContent = `展示更多回复（还剩 ${remaining} 条） ↓`;
+      } else if (actionEl) actionEl.style.display = 'none';
+    };
+    if (ctx.withViewportAnchor) ctx.withViewportAnchor(mutate);
+    else mutate();
   }
 
   function renderSubReplyBatch(postNumber, ctx) {
@@ -3431,18 +3435,30 @@
             if (!en.target.isConnected || ctx.windowEpoch !== Number(en.target.dataset.windowEpoch)) return;
             fetched.add(postId);
             const loadingEl = en.target.querySelector(':scope > .ldp-sub-loading');
-            if (loadingEl) loadingEl.style.display = 'block';
+            if (loadingEl) {
+              const showLoading = () => { loadingEl.style.display = 'block'; };
+              if (ctx.withViewportAnchor) ctx.withViewportAnchor(showLoading);
+              else showLoading();
+            }
             try {
               const replies = await fetchJSON(`${BASE}/posts/${postId}/replies.json`, { signal: ctx.signal });
               if (!en.target.isConnected || ctx.windowEpoch !== Number(en.target.dataset.windowEpoch)) return;
-              if (loadingEl) loadingEl.style.display = 'none';
-              if (!replies || !replies.length) return;
-              if (ctx.loader) replies.forEach((reply) => ctx.loader.mergePost(reply));
-              ctx.subReplyCache.set(postId, replies);
-              ctx.subReplyState.set(postNumber, { all: replies, renderedCount: 0 });
-              renderSubReplyBatch(postNumber, ctx); // 首批只渲染 SUB_REPLY_INITIAL_SIZE 条
+              const applyReplies = () => {
+                if (loadingEl) loadingEl.style.display = 'none';
+                if (!replies || !replies.length) return;
+                if (ctx.loader) replies.forEach((reply) => ctx.loader.mergePost(reply));
+                ctx.subReplyCache.set(postId, replies);
+                ctx.subReplyState.set(postNumber, { all: replies, renderedCount: 0 });
+                renderSubReplyBatch(postNumber, ctx); // 首批只渲染 SUB_REPLY_INITIAL_SIZE 条
+              };
+              if (ctx.withViewportAnchor) ctx.withViewportAnchor(applyReplies);
+              else applyReplies();
             } catch (e) {
-              if (loadingEl) loadingEl.style.display = 'none';
+              if (loadingEl) {
+                const hideLoading = () => { loadingEl.style.display = 'none'; };
+                if (ctx.withViewportAnchor) ctx.withViewportAnchor(hideLoading);
+                else hideLoading();
+              }
               fetched.delete(postId); // 失败允许下次进入视口重试
             }
           }, REPLIES_HOVER_DELAY);
@@ -4101,6 +4117,12 @@
   function createVirtualFlow(loader, ctx) {
     const DEFAULT_HEIGHT = 184;
     const OVERSCAN_SCREENS = 1.25;
+    const KEEPALIVE_SCREENS = 0.5;
+    const HEIGHT_EPSILON = 1;
+    const SEEK_QUIET_MS = 120;
+    const SEEK_MAX_MS = 500;
+    const MANUAL_SCROLL_QUIET_MS = 180;
+    const DISCONTINUOUS_SCROLL_SCREENS = 1.5;
     let logicalIds = loader.getStreamIds();
     const heightByPostId = new Map();
     let positionByPostId = new Map();
@@ -4108,38 +4130,49 @@
     let prefix = [0];
     let mountedStart = -1;
     let mountedEnd = -1;
-    let renderToken = 0;
     let scrollRaf = 0;
+    let resizeRaf = 0;
     let destroyed = false;
     let onlyOp = false;
     let onlyOpController = null;
     let pinnedAnchor = null;
+    let seekQuietTimer = 0;
+    let seekMaxTimer = 0;
+    let seekingScroll = false;
+    let committing = false;
+    let mountSequence = 0;
+    let latestMountSequence = 0;
+    let activeMount = null;
+    let queuedMount = null;
+    let pendingResizeAnchor = null;
+    let manualScrollAnchor = null;
+    let manualScrollTimer = 0;
+    let manualScrollActive = false;
+    let lastObservedScrollTop = ctx.scrollRoot.scrollTop;
+    let viewportWasAtBottom = false;
+    let stableViewportAnchor = null;
+    const pendingResizeHeights = new Map();
     const resizeObserver = new ResizeObserver((entries) => {
-      if (destroyed || !entries.length) return;
-      const anchor = pinnedAnchor || currentAnchor();
-      let changed = false;
+      if (destroyed || committing || !entries.length) return;
       entries.forEach((entry) => {
+        if (!entry.target.isConnected) return;
         const postId = Number(entry.target.dataset.streamPostId);
         const position = positionByPostId.get(postId);
         if (position === undefined) return;
         const next = Math.max(56, entry.borderBoxSize && entry.borderBoxSize[0]
           ? entry.borderBoxSize[0].blockSize : entry.contentRect.height);
-        if (Math.abs((heights[position] || DEFAULT_HEIGHT) - next) > 0.5) {
-          heights[position] = next;
-          heightByPostId.set(postId, next);
-          changed = true;
+        if (Math.abs((heights[position] || DEFAULT_HEIGHT) - next) >= HEIGHT_EPSILON) {
+          pendingResizeHeights.set(postId, next);
         }
       });
-      if (!changed) return;
-      rebuildPrefix();
-      syncSpacers();
-      if (anchor.pinned) {
-        const mapped = positionByPostId.get(Number(anchor.postId));
-        const position = mapped === undefined ? anchor.position : mapped;
-        ctx.scrollRoot.scrollTop = contentTop() + prefix[position] - anchor.viewportOffset;
-      } else {
-        restoreAnchor(anchor);
+      if (!pendingResizeHeights.size) {
+        if (!resizeRaf) pendingResizeAnchor = null;
+        return;
       }
+      if (!pendingResizeAnchor) pendingResizeAnchor = pinnedAnchor || stableViewportAnchor || captureViewportAnchor();
+      if (resizeRaf) return;
+      if (pinnedAnchor) notePinnedActivity();
+      resizeRaf = requestAnimationFrame(applyResizeUpdates);
     });
 
     ctx.commentsEl.innerHTML = `
@@ -4171,7 +4204,12 @@
       return ctx.commentsEl.offsetTop;
     }
 
+    function isAtBottom() {
+      return ctx.scrollRoot.scrollHeight - ctx.scrollRoot.clientHeight - ctx.scrollRoot.scrollTop <= 2;
+    }
+
     function currentAnchor() {
+      if (!logicalIds.length) return { aboveContent: true, scrollTop: ctx.scrollRoot.scrollTop };
       if (ctx.scrollRoot.scrollTop < contentTop()) {
         return { aboveContent: true, scrollTop: ctx.scrollRoot.scrollTop };
       }
@@ -4184,11 +4222,69 @@
       if (!anchor || !heights.length) return;
       if (anchor.aboveContent) {
         ctx.scrollRoot.scrollTop = Math.max(0, Number(anchor.scrollTop) || 0);
+        viewportWasAtBottom = isAtBottom();
+        stableViewportAnchor = anchor;
         return;
       }
       const mapped = positionByPostId.get(Number(anchor.postId));
       const position = mapped === undefined ? Math.min(anchor.position, heights.length - 1) : mapped;
       ctx.scrollRoot.scrollTop = contentTop() + prefix[position] + anchor.offset;
+      viewportWasAtBottom = isAtBottom();
+      stableViewportAnchor = captureViewportAnchor();
+    }
+
+    function captureViewportAnchor() {
+      if (!logicalIds.length || ctx.scrollRoot.scrollTop < contentTop()) return currentAnchor();
+      const rootRect = ctx.scrollRoot.getBoundingClientRect();
+      const nodes = Array.from(windowEl.children).filter((node) => node.dataset.streamPostId);
+      const visibleNodes = nodes.filter((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.bottom > rootRect.top + 1 && rect.top < rootRect.bottom - 1;
+      });
+      const atBottom = viewportWasAtBottom || isAtBottom();
+      const probeY = rootRect.top + rootRect.height * 0.35;
+      const visible = (atBottom && visibleNodes.length ? visibleNodes[visibleNodes.length - 1] : null)
+        || visibleNodes.find((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.top <= probeY && rect.bottom > probeY;
+      }) || visibleNodes[0];
+      if (!visible) return currentAnchor();
+      const postId = Number(visible.dataset.streamPostId);
+      const position = positionByPostId.get(postId);
+      if (position === undefined) return currentAnchor();
+      const post = loader.getPostById(postId);
+      return {
+        postId, position, postNumber: post && Number(post.post_number),
+        viewportOffset: visible.getBoundingClientRect().top - rootRect.top,
+        offset: ctx.scrollRoot.scrollTop - contentTop() - prefix[position],
+      };
+    }
+
+    function restoreViewportAnchor(anchor) {
+      if (!anchor || !heights.length) return;
+      if (anchor.aboveContent) {
+        ctx.scrollRoot.scrollTop = Math.max(0, Number(anchor.scrollTop) || 0);
+        viewportWasAtBottom = isAtBottom();
+        stableViewportAnchor = anchor;
+        return;
+      }
+      const mapped = positionByPostId.get(Number(anchor.postId));
+      const position = mapped === undefined
+        ? Math.max(0, Math.min(heights.length - 1, Number(anchor.position) || 0)) : mapped;
+      const node = Array.from(windowEl.children)
+        .find((item) => Number(item.dataset.streamPostId) === Number(logicalIds[position]));
+      if (node && Number.isFinite(Number(anchor.viewportOffset))) {
+        const rootTop = ctx.scrollRoot.getBoundingClientRect().top;
+        const delta = node.getBoundingClientRect().top - rootTop - Number(anchor.viewportOffset);
+        if (Math.abs(delta) >= 0.5) ctx.scrollRoot.scrollTop += delta;
+        viewportWasAtBottom = isAtBottom();
+        stableViewportAnchor = captureViewportAnchor();
+        return;
+      }
+      const offset = Number.isFinite(Number(anchor.offset)) ? Number(anchor.offset) : -Number(anchor.viewportOffset || 0);
+      ctx.scrollRoot.scrollTop = Math.max(0, contentTop() + prefix[position] + offset);
+      viewportWasAtBottom = isAtBottom();
+      stableViewportAnchor = captureViewportAnchor();
     }
 
     function syncSpacers() {
@@ -4209,6 +4305,65 @@
       windowEl.replaceChildren();
     }
 
+    function measureWindowHeights() {
+      let changed = false;
+      Array.from(windowEl.children).forEach((node) => {
+        const postId = Number(node.dataset.streamPostId);
+        const position = positionByPostId.get(postId);
+        if (position === undefined) return;
+        const next = Math.max(56, node.getBoundingClientRect().height);
+        if (Math.abs((heights[position] || DEFAULT_HEIGHT) - next) < HEIGHT_EPSILON) return;
+        heights[position] = next;
+        heightByPostId.set(postId, next);
+        changed = true;
+      });
+      if (changed) rebuildPrefix();
+      return changed;
+    }
+
+    function applyResizeUpdates() {
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      resizeRaf = 0;
+      if (destroyed || !pendingResizeHeights.size) {
+        pendingResizeHeights.clear();
+        pendingResizeAnchor = null;
+        return;
+      }
+      const anchor = pendingResizeAnchor;
+      pendingResizeAnchor = null;
+      let changed = false;
+      pendingResizeHeights.forEach((next, postId) => {
+        const position = positionByPostId.get(Number(postId));
+        if (position === undefined || Math.abs((heights[position] || DEFAULT_HEIGHT) - next) < HEIGHT_EPSILON) return;
+        heights[position] = next;
+        heightByPostId.set(Number(postId), next);
+        changed = true;
+      });
+      pendingResizeHeights.clear();
+      if (!changed) return;
+      rebuildPrefix();
+      syncSpacers();
+      if (anchor && (anchor.pinned || Number.isFinite(Number(anchor.viewportOffset)))) restoreViewportAnchor(anchor);
+      else restoreAnchor(anchor);
+    }
+
+    function withViewportAnchor(mutator) {
+      if (typeof mutator !== 'function') return undefined;
+      if (destroyed || committing) return mutator();
+      if (resizeRaf || pendingResizeHeights.size) applyResizeUpdates();
+      const anchor = pinnedAnchor || captureViewportAnchor();
+      committing = true;
+      try {
+        return mutator();
+      } finally {
+        measureWindowHeights();
+        syncSpacers();
+        restoreViewportAnchor(anchor);
+        committing = false;
+        if (pinnedAnchor) notePinnedActivity();
+      }
+    }
+
     function addReplySummary(node, post) {
       if (!(Number(post.reply_to_post_number) > 1)) return;
       node.classList.add('ldp-reply-summary');
@@ -4220,7 +4375,7 @@
       if (content) content.before(toggle);
     }
 
-    function renderWindow(entries, start, end) {
+    function renderWindow(entries) {
       clearWindow();
       const byParent = new Map();
       entries.forEach(({ post }) => {
@@ -4263,34 +4418,109 @@
         });
         if (ctx.subReplyState.has(Number(post.post_number))) renderSubReplyState(Number(post.post_number), ctx);
       });
-      Array.from(windowEl.children).forEach((node) => resizeObserver.observe(node));
-      if (ctx.onPostsChanged) ctx.onPostsChanged();
     }
 
-    async function mount(start, end, priority) {
-      if (destroyed || !logicalIds.length) return;
+    function settleMountRequest(request, value, error) {
+      request.waiters.forEach(({ resolve, reject }) => error ? reject(error) : resolve(value));
+      request.waiters.length = 0;
+    }
+
+    function startNextMount() {
+      if (destroyed || activeMount || !queuedMount) return;
+      const request = queuedMount;
+      queuedMount = null;
+      activeMount = request;
+      (async () => {
+        const groups = [];
+        for (let index = 0; index < request.source.length; index += PAGE_SIZE) {
+          groups.push(loader.fetchIds(request.source.slice(index, index + PAGE_SIZE), request.priority, ctx.signal));
+        }
+        await Promise.all(groups);
+        if (destroyed) return false;
+        if (!request.forceCommit && request.sequence < latestMountSequence) return false;
+        const entries = request.source.map((id) => ({ id, post: loader.getPostById(id) }));
+        const anchor = request.anchorOverride || manualScrollAnchor
+          || (request.preserveAnchor ? captureViewportAnchor() : null);
+        committing = true;
+        try {
+          if (resizeRaf) cancelAnimationFrame(resizeRaf);
+          resizeRaf = 0;
+          pendingResizeHeights.clear();
+          pendingResizeAnchor = null;
+          mountedStart = request.start;
+          mountedEnd = request.end;
+          renderWindow(entries);
+          measureWindowHeights();
+          syncSpacers();
+          if (anchor) restoreViewportAnchor(anchor);
+          Array.from(windowEl.children).forEach((node) => resizeObserver.observe(node));
+        } finally {
+          committing = false;
+        }
+        if (ctx.onPostsChanged) ctx.onPostsChanged();
+        return true;
+      })().then((committed) => {
+        settleMountRequest(request, committed);
+        if (committed && request.forceCommit && queuedMount && !queuedMount.forceCommit) {
+          settleMountRequest(queuedMount, false);
+          queuedMount = null;
+        }
+      }).catch((error) => settleMountRequest(request, false, error)).finally(() => {
+        activeMount = null;
+        queueMicrotask(startNextMount);
+      });
+    }
+
+    function mount(start, end, priority, options) {
+      if (destroyed || !logicalIds.length) return Promise.resolve(false);
       const safeStart = Math.max(0, Math.min(logicalIds.length - 1, start));
       const safeEnd = Math.max(safeStart + 1, Math.min(logicalIds.length, end));
-      if (safeStart === mountedStart && safeEnd === mountedEnd) return;
-      const token = ++renderToken;
+      const force = !!(options && options.force);
+      if (!force && safeStart === mountedStart && safeEnd === mountedEnd) return Promise.resolve(true);
       const source = logicalIds.slice(safeStart, safeEnd);
-      const groups = [];
-      for (let index = 0; index < source.length; index += PAGE_SIZE) {
-        const chunk = source.slice(index, index + PAGE_SIZE);
-        groups.push(loader.fetchIds(chunk, priority || 'visible', ctx.signal));
-      }
-      await Promise.all(groups);
-      if (destroyed || token !== renderToken) return;
-      const entries = source.map((id) => ({ id, post: loader.getPostById(id) }));
-      mountedStart = safeStart;
-      mountedEnd = safeEnd;
-      renderWindow(entries, safeStart, safeEnd);
-      syncSpacers();
+      const same = (request) => request && request.start === safeStart && request.end === safeEnd
+        && request.source.length === source.length && request.source.every((id, index) => Number(id) === Number(source[index]));
+      return new Promise((resolve, reject) => {
+        const forceCommit = !!(options && options.forceCommit);
+        if (same(activeMount) && (!forceCommit || activeMount.forceCommit)) {
+          if (options && options.anchorOverride) activeMount.anchorOverride = options.anchorOverride;
+          activeMount.waiters.push({ resolve, reject });
+          return;
+        }
+        if (same(queuedMount)) {
+          if (options && options.anchorOverride) queuedMount.anchorOverride = options.anchorOverride;
+          if (forceCommit) {
+            queuedMount.forceCommit = true;
+            queuedMount.priority = priority || 'target';
+            queuedMount.preserveAnchor = !options || options.preserveAnchor !== false;
+            queuedMount.anchorOverride = options && options.anchorOverride;
+          }
+          queuedMount.waiters.push({ resolve, reject });
+          return;
+        }
+        const request = {
+          start: safeStart, end: safeEnd, source,
+          priority: priority || 'visible', sequence: ++mountSequence,
+          preserveAnchor: !options || options.preserveAnchor !== false,
+          anchorOverride: options && options.anchorOverride,
+          forceCommit,
+          waiters: [{ resolve, reject }],
+        };
+        latestMountSequence = request.sequence;
+        if (queuedMount) settleMountRequest(queuedMount, false);
+        queuedMount = request;
+        startNextMount();
+      });
     }
 
-    function desiredWindow() {
+    function desiredWindow(force) {
       const relativeTop = Math.max(0, ctx.scrollRoot.scrollTop - contentTop());
       const viewport = Math.max(1, ctx.scrollRoot.clientHeight);
+      if (!force && mountedStart >= 0 && mountedEnd > mountedStart) {
+        const before = mountedStart === 0 ? Infinity : relativeTop - prefix[mountedStart];
+        const after = mountedEnd >= logicalIds.length ? Infinity : prefix[mountedEnd] - (relativeTop + viewport);
+        if (before >= viewport * KEEPALIVE_SCREENS && after >= viewport * KEEPALIVE_SCREENS) return null;
+      }
       const first = lowerBound(Math.max(0, relativeTop - viewport * OVERSCAN_SCREENS));
       let last = lowerBound(relativeTop + viewport * (1 + OVERSCAN_SCREENS)) + 1;
       last = Math.min(logicalIds.length, Math.max(first + 1, last));
@@ -4298,16 +4528,81 @@
       return { start: first, end: last };
     }
 
+    function windowAroundPosition(position) {
+      const start = Math.max(0, Math.min(position - SLICE_RADIUS, Math.max(0, logicalIds.length - PAGE_SIZE)));
+      return { start, end: Math.min(logicalIds.length, Math.max(start + PAGE_SIZE, position + 1)) };
+    }
+
     function onScroll() {
+      const nextScrollTop = ctx.scrollRoot.scrollTop;
+      const viewport = Math.max(1, ctx.scrollRoot.clientHeight);
+      const discontinuous = !committing && !seekingScroll && !pinnedAnchor
+        && Math.abs(nextScrollTop - lastObservedScrollTop) > viewport * DISCONTINUOUS_SCROLL_SCREENS;
+      lastObservedScrollTop = nextScrollTop;
+      if (manualScrollActive || discontinuous || seekingScroll || pinnedAnchor) {
+        viewportWasAtBottom = isAtBottom();
+        stableViewportAnchor = manualScrollActive || discontinuous ? currentAnchor() : captureViewportAnchor();
+      }
+      if (pinnedAnchor && !seekingScroll) {
+        const mapped = positionByPostId.get(Number(pinnedAnchor.postId));
+        const position = mapped === undefined ? pinnedAnchor.position : mapped;
+        const expected = contentTop() + prefix[position] - pinnedAnchor.viewportOffset;
+        if (Math.abs(ctx.scrollRoot.scrollTop - expected) > 2) clearPinnedAnchor();
+      }
       if (scrollRaf) return;
       scrollRaf = requestAnimationFrame(() => {
         scrollRaf = 0;
-        const desired = desiredWindow();
-        mount(desired.start, desired.end, 'visible').catch(() => {});
+        if (manualScrollActive || discontinuous) {
+          manualScrollActive = true;
+          manualScrollAnchor = currentAnchor();
+          scheduleManualScrollRelease();
+        }
+        const desired = desiredWindow(false);
+        if (desired) {
+          mount(desired.start, desired.end, 'visible', {
+            anchorOverride: manualScrollAnchor,
+          }).catch(() => {});
+        }
         const anchor = currentAnchor();
-        const post = loader.getPostById(logicalIds[anchor.position]);
+        const post = anchor.aboveContent ? null : loader.getPostById(logicalIds[anchor.position]);
         if (post && loader.topic) rememberTopicHistory(loader.topic, post.post_number);
       });
+    }
+
+    function clearPinnedAnchor() {
+      if (!committing && pendingResizeAnchor && pendingResizeAnchor.pinned) {
+        if (pendingResizeHeights.size) applyResizeUpdates();
+        else pendingResizeAnchor = null;
+      }
+      pinnedAnchor = null;
+      if (seekQuietTimer) clearTimeout(seekQuietTimer);
+      if (seekMaxTimer) clearTimeout(seekMaxTimer);
+      seekQuietTimer = seekMaxTimer = 0;
+    }
+
+    function notePinnedActivity() {
+      if (!pinnedAnchor) return;
+      if (seekQuietTimer) clearTimeout(seekQuietTimer);
+      seekQuietTimer = setTimeout(clearPinnedAnchor, SEEK_QUIET_MS);
+      if (!seekMaxTimer) seekMaxTimer = setTimeout(clearPinnedAnchor, SEEK_MAX_MS);
+    }
+
+    function clearManualScrollAnchor() {
+      manualScrollActive = false;
+      manualScrollAnchor = null;
+      if (manualScrollTimer) clearTimeout(manualScrollTimer);
+      manualScrollTimer = 0;
+    }
+
+    function scheduleManualScrollRelease() {
+      if (manualScrollTimer) clearTimeout(manualScrollTimer);
+      manualScrollTimer = setTimeout(clearManualScrollAnchor, MANUAL_SCROLL_QUIET_MS);
+    }
+
+    function beginManualScroll() {
+      clearPinnedAnchor();
+      manualScrollActive = true;
+      scheduleManualScrollRelease();
     }
 
     async function seekToIndex(streamIndex, desiredPostNumber, options) {
@@ -4318,16 +4613,28 @@
       const streamId = loader.getStreamIds()[Math.max(0, Math.min(loader.streamLength - 1, Number(streamIndex) || 0))];
       let position = positionByPostId.get(Number(streamId));
       if (position === undefined) position = 0;
-      const start = Math.max(0, Math.min(position - SLICE_RADIUS, Math.max(0, logicalIds.length - PAGE_SIZE)));
-      const end = Math.min(logicalIds.length, Math.max(start + PAGE_SIZE, position + 1));
+      const targetWindow = windowAroundPosition(position);
       const local = position >= mountedStart && position < mountedEnd;
-      await mount(start, end, 'target');
+      await mount(targetWindow.start, targetWindow.end, 'target', {
+        preserveAnchor: false, forceCommit: true,
+      });
+      position = positionByPostId.get(Number(streamId));
+      if (position === undefined) position = 0;
       const behavior = local && options && options.smooth ? 'smooth' : 'auto';
       const top = contentTop() + prefix[position];
       const viewportOffset = ctx.scrollRoot.clientHeight * 0.3;
+      clearPinnedAnchor();
       pinnedAnchor = { position, postId: logicalIds[position], viewportOffset, pinned: true };
-      ctx.scrollRoot.scrollTo({ top: Math.max(0, top - viewportOffset), behavior });
-      if (behavior === 'smooth') await waitForScrollEnd(ctx.scrollRoot);
+      seekingScroll = true;
+      try {
+        ctx.scrollRoot.scrollTo({ top: Math.max(0, top - viewportOffset), behavior });
+        if (behavior === 'smooth') await waitForScrollEnd(ctx.scrollRoot);
+      } finally {
+        seekingScroll = false;
+      }
+      viewportWasAtBottom = isAtBottom();
+      stableViewportAnchor = captureViewportAnchor();
+      notePinnedActivity();
       const node = desiredPostNumber ? ctx.nodeMap.get(Number(desiredPostNumber)) : null;
       if (node) {
         node.classList.add('ldp-flash');
@@ -4342,7 +4649,9 @@
     }
 
     async function scrollToTop() {
-      pinnedAnchor = null;
+      clearPinnedAnchor();
+      viewportWasAtBottom = false;
+      stableViewportAnchor = { aboveContent: true, scrollTop: 0 };
       ctx.scrollRoot.scrollTo({ top: 0, behavior: 'auto' });
       onScroll();
       await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -4357,7 +4666,7 @@
       onlyOp = !!enabled;
       if (onlyOpController) onlyOpController.abort();
       onlyOpController = null;
-      await reconcileStream(loader.getStreamIds());
+      await reconcileStream(loader.getStreamIds(), { forceCommit: true });
       if (!onlyOp) return;
       onlyOpController = new AbortController();
       const controller = onlyOpController;
@@ -4372,35 +4681,68 @@
       }).finally(() => ctx.signal.removeEventListener('abort', abortScan));
     }
 
-    async function reconcileStream(nextIds) {
+    async function reconcileStream(nextIds, options) {
       if (destroyed) return;
-      const anchor = logicalIds.length ? currentAnchor() : null;
+      const anchor = logicalIds.length ? captureViewportAnchor() : null;
       logicalIds = (nextIds || []).filter((id) => !onlyOp || (loader.getPostById(id) || {}).username === ctx.op);
       heights = logicalIds.map((id) => heightByPostId.get(Number(id)) || DEFAULT_HEIGHT);
       rebuildPrefix();
       mountedStart = mountedEnd = -1;
-      clearWindow();
-      syncSpacers();
-      if (!logicalIds.length) return;
-      const desired = desiredWindow();
-      await mount(desired.start, desired.end, 'visible');
-      if (anchor) restoreAnchor(anchor);
+      if (!logicalIds.length) {
+        withViewportAnchor(() => clearWindow());
+        syncSpacers();
+        return;
+      }
+      let position = anchor && positionByPostId.get(Number(anchor.postId));
+      if (position === undefined && anchor && anchor.postNumber) {
+        let distance = Infinity;
+        logicalIds.forEach((id, index) => {
+          const post = loader.getPostById(id);
+          const nextDistance = post ? Math.abs(Number(post.post_number) - anchor.postNumber) : Infinity;
+          if (nextDistance < distance) { distance = nextDistance; position = index; }
+        });
+      }
+      if (position === undefined) position = Math.max(0, Math.min(logicalIds.length - 1, Number(anchor && anchor.position) || 0));
+      const desired = windowAroundPosition(position);
+      await mount(desired.start, desired.end, 'visible', {
+        force: true, forceCommit: !!(options && options.forceCommit),
+        preserveAnchor: true, anchorOverride: anchor,
+      });
     }
 
     rebuildPrefix();
     syncSpacers();
+    ctx.withViewportAnchor = withViewportAnchor;
     const unsubscribeStream = loader.subscribeStream((ids) => reconcileStream(ids).catch(() => {}));
     const unsubscribePosts = loader.subscribePosts((posts) => {
       const root = ctx.commentsEl.closest('.ldp-shell') || ctx.commentsEl;
       posts.forEach((post) => syncRenderedPostState(root, post));
       if (onlyOp && posts.some((post) => post && post.username === ctx.op)) reconcileStream(loader.getStreamIds()).catch(() => {});
     });
-    const releasePinnedAnchor = () => { pinnedAnchor = null; };
+    const releasePinnedAnchor = () => beginManualScroll();
+    const releasePinnedOnPointer = (event) => {
+      if (event.target === ctx.scrollRoot) beginManualScroll();
+      else clearPinnedAnchor();
+    };
+    const releasePinnedOnKey = (event) => {
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Spacebar'].includes(event.key)) {
+        beginManualScroll();
+      }
+    };
     ctx.scrollRoot.addEventListener('scroll', onScroll, { passive: true });
     ctx.scrollRoot.addEventListener('wheel', releasePinnedAnchor, { passive: true });
     ctx.scrollRoot.addEventListener('touchmove', releasePinnedAnchor, { passive: true });
+    ctx.scrollRoot.addEventListener('pointerdown', releasePinnedOnPointer, { passive: true });
+    document.addEventListener('keydown', releasePinnedOnKey, true);
     return {
-      mountInitial(target) {
+      async mountInitial(target) {
+        if (Number(target && target.postNumber) <= 1) {
+          const initialWindow = windowAroundPosition(0);
+          await mount(initialWindow.start, initialWindow.end, 'target', {
+            preserveAnchor: false, forceCommit: true,
+          });
+          return scrollToTop();
+        }
         return seekToIndex(target.index || 0, target.postNumber, { smooth: false });
       },
       seekToIndex, seekToPost, scrollToTop, setOnlyOp,
@@ -4414,10 +4756,18 @@
         if (onlyOpController) onlyOpController.abort();
         unsubscribeStream(); unsubscribePosts();
         cancelAnimationFrame(scrollRaf);
+        cancelAnimationFrame(resizeRaf);
+        clearPinnedAnchor();
+        clearManualScrollAnchor();
+        if (queuedMount) settleMountRequest(queuedMount, false);
+        queuedMount = null;
         resizeObserver.disconnect();
         ctx.scrollRoot.removeEventListener('scroll', onScroll);
         ctx.scrollRoot.removeEventListener('wheel', releasePinnedAnchor);
         ctx.scrollRoot.removeEventListener('touchmove', releasePinnedAnchor);
+        ctx.scrollRoot.removeEventListener('pointerdown', releasePinnedOnPointer);
+        document.removeEventListener('keydown', releasePinnedOnKey, true);
+        if (ctx.withViewportAnchor === withViewportAnchor) ctx.withViewportAnchor = null;
         clearWindow();
       },
     };
