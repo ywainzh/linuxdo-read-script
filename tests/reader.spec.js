@@ -333,6 +333,65 @@ test('keeps the current floor fixed while delayed direct replies are inserted ab
   expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
 });
 
+test('defers direct reply layout until continuous scrolling becomes idle', async ({ page }) => {
+  const requests = await bootReader(page, {
+    target: 9,
+    repliesCount: 3,
+    repliesDelay: 1000,
+    postOverrides: { 10: { reply_to_post_number: null } },
+  });
+  const body = page.locator('.ldp-body');
+  const parent = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"]');
+  const children = parent.locator(':scope > .ldp-children > .ldp-post-copy');
+  const anchor = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="13"]');
+
+  for (let index = 0; index < 14; index++) {
+    await body.dispatchEvent('wheel', { deltaY: 1 });
+    await page.waitForTimeout(100);
+  }
+  expect(requests.some((item) => item.type === 'replies' && item.parentId === postId(9))).toBeTruthy();
+  await expect(children).toHaveCount(0);
+  await anchor.evaluate((node) => node.scrollIntoView({ block: 'start' }));
+  await body.dispatchEvent('wheel', { deltaY: 1 });
+  const before = await anchor.evaluate((node) => node.getBoundingClientRect().top);
+
+  await expect(children).toHaveCount(3);
+  await expect.poll(async () => {
+    const after = await anchor.evaluate((node) => node.getBoundingClientRect().top);
+    return Math.abs(after - before);
+  }).toBeLessThanOrEqual(2);
+});
+
+test('reuses overlapping post and image nodes when the virtual window advances', async ({ page }) => {
+  await bootReader(page, {
+    target: 500,
+    postOverrides: {
+      522: { cooked: '<p>Reusable media floor.</p><img data-reuse-image src="/image.png" style="display:block;width:100%;height:80px">' },
+    },
+  });
+  const before = await page.locator('.ldp-virtual-window').evaluate((windowNode) => {
+    const roots = Array.from(windowNode.children).filter((node) => node.matches('.ldp-post'));
+    roots.forEach((node) => { node.__reuseProbe = node.dataset.postId; });
+    const image = windowNode.querySelector('[data-reuse-image]');
+    image.__reuseProbe = 'image-500';
+    return roots.map((node) => Number(node.dataset.postNumber));
+  });
+
+  await page.locator('.ldp-virtual-window > .ldp-post[data-post-number="522"]')
+    .evaluate((node) => node.scrollIntoView({ block: 'start' }));
+  await expect.poll(async () => page.locator('.ldp-virtual-window > .ldp-post').evaluateAll((nodes, first) =>
+    Number(nodes[0] && nodes[0].dataset.postNumber) !== Number(first), before[0])).toBeTruthy();
+
+  const reused = await page.locator('.ldp-virtual-window').evaluate((windowNode) => ({
+    post: Array.from(windowNode.children).some((node) => node.__reuseProbe === node.dataset.postId),
+    image: windowNode.querySelector('[data-reuse-image]')?.__reuseProbe === 'image-500',
+    count: windowNode.querySelectorAll(':scope > .ldp-post').length,
+  }));
+  expect(reused.post).toBeTruthy();
+  expect(reused.image).toBeTruthy();
+  expect(reused.count).toBeLessThanOrEqual(72);
+});
+
 test('does not commit an obsolete window during rapid delayed scrolling', async ({ page }) => {
   await bootReader(page, {
     target: 12,

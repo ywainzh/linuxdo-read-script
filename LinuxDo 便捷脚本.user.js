@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      2.0.4
+// @version      2.0.5
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 高性能浮窗阅读帖子，支持虚拟楼层、历史收藏、互动、用户卡片和 Obsidian 快照。
 // @author       Fashion
@@ -3120,6 +3120,7 @@
     const mutate = () => renderSubReplyStateInto(parentNode, postNumber, ctx, 1, new Set([Number(parentNode.dataset.postId)]));
     if (ctx.withViewportAnchor) ctx.withViewportAnchor(mutate);
     else mutate();
+    if (ctx.refreshRenderRevision) ctx.refreshRenderRevision(parentNode);
   }
 
   function renderSubReplyBatch(postNumber, ctx) {
@@ -3482,39 +3483,92 @@
     const fetched = new Set();
     const inFlight = new Map();
     const hoverTimers = new Map();
+    const pendingReplies = new Map();
+    const appliedReplyParents = new Set();
+    let scrollActive = false;
 
-    const applyReplies = (node, replies, targetPostId) => {
+    const applyReplies = (node, replies, targetPostId, render) => {
       if (!node || !node.isConnected) return null;
       const postId = Number(node.dataset.postId);
       const postNumber = Number(node.dataset.postNumber);
+      const existingState = ctx.subReplyState.get(postNumber);
       const canonicalReplies = (replies || []).map((reply) => ctx.loader.mergePost(reply) || reply);
       const knownReplies = ctx.loader.getKnownChildren(postNumber);
       const merged = [...knownReplies, ...canonicalReplies];
       if (replies) ctx.subReplyCache.set(String(postId), canonicalReplies);
       const state = mergeSubReplyState(postNumber, merged, ctx, targetPostId);
+      appliedReplyParents.add(String(postId));
       if (!state.renderedCount) state.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length);
-      renderSubReplyState(postNumber, ctx);
-      if (ctx.onPostsChanged) ctx.onPostsChanged();
+      const needsRender = canonicalReplies.length > 0 || !existingState || !!targetPostId;
+      if (render !== false && needsRender) {
+        renderSubReplyState(postNumber, ctx);
+        if (ctx.onPostsChanged) ctx.onPostsChanged();
+      }
       return state;
+    };
+
+    const commitOrQueue = (node, replies, targetPostId, immediate) => {
+      if (!node || !node.isConnected) return null;
+      const postId = String(node.dataset.postId || '');
+      if (!postId) return null;
+      ctx.subReplyCache.set(postId, replies || []);
+      if (scrollActive && !immediate) {
+        pendingReplies.set(postId, {
+          postId, postNumber: Number(node.dataset.postNumber), replies: replies || [], targetPostId,
+        });
+        return null;
+      }
+      pendingReplies.delete(postId);
+      return applyReplies(node, replies, targetPostId);
+    };
+
+    const flushPendingReplies = () => {
+      if (scrollActive || !pendingReplies.size) return 0;
+      const batch = Array.from(pendingReplies.values());
+      pendingReplies.clear();
+      const renderedParents = [];
+      const mutate = () => {
+        batch.forEach((entry) => {
+          const node = ctx.nodeMap.get(Number(entry.postNumber));
+          if (!node || !node.isConnected || String(node.dataset.postId) !== entry.postId) return;
+          const needsLayout = entry.replies.length > 0
+            || !ctx.subReplyState.has(Number(entry.postNumber)) || !!entry.targetPostId;
+          if (applyReplies(node, entry.replies, entry.targetPostId, false) && needsLayout) {
+            renderedParents.push(entry.postNumber);
+          }
+        });
+        renderedParents.forEach((postNumber) => {
+          const parent = ctx.nodeMap.get(Number(postNumber));
+          if (parent && parent.isConnected) {
+            renderSubReplyStateInto(parent, postNumber, ctx, 1, new Set([Number(parent.dataset.postId)]));
+            if (ctx.refreshRenderRevision) ctx.refreshRenderRevision(parent);
+          }
+        });
+      };
+      if (ctx.withViewportAnchor) ctx.withViewportAnchor(mutate); else mutate();
+      if (renderedParents.length && ctx.onPostsChanged) ctx.onPostsChanged();
+      return renderedParents.length;
     };
 
     const loadForNode = async (node, options) => {
       if (!node || !node.isConnected) return [];
       const postId = String(node.dataset.postId || '');
       const targetPostId = options && options.targetPostId;
+      const immediate = !!(options && options.priority === 'target');
       if (!postId) return [];
       if (ctx.subReplyCache.has(postId)) {
         const cached = ctx.subReplyCache.get(postId) || [];
-        applyReplies(node, cached, targetPostId);
+        if (appliedReplyParents.has(postId)) return cached;
+        commitOrQueue(node, cached, targetPostId, immediate);
         return cached;
       }
       if (inFlight.has(postId)) {
         const replies = await inFlight.get(postId);
-        applyReplies(node, replies, targetPostId);
+        commitOrQueue(node, replies, targetPostId, immediate);
         return replies;
       }
       const loadingEl = node.querySelector(':scope > .ldp-sub-loading');
-      if (loadingEl) {
+      if (loadingEl && immediate) {
         const showLoading = () => { loadingEl.style.display = 'block'; };
         if (ctx.withViewportAnchor) ctx.withViewportAnchor(showLoading); else showLoading();
       }
@@ -3526,7 +3580,8 @@
       try {
         const replies = await request;
         fetched.add(postId);
-        if (node.isConnected) applyReplies(node, replies, targetPostId);
+        ctx.subReplyCache.set(postId, replies);
+        if (node.isConnected) commitOrQueue(node, replies, targetPostId, immediate);
         return replies;
       } finally {
         inFlight.delete(postId);
@@ -3543,12 +3598,15 @@
         if (!postId) return;
 
         if (en.isIntersecting) {
-          if (ctx.subReplyCache.has(postId)) { applyReplies(en.target, ctx.subReplyCache.get(postId)); return; }
+          if (ctx.subReplyCache.has(postId)) {
+            commitOrQueue(en.target, ctx.subReplyCache.get(postId), null, false);
+            return;
+          }
           if (fetched.has(postId) || hoverTimers.has(postId)) return;
           // 停顿检测：楼层需在视口停留 REPLIES_HOVER_DELAY 才真正发起请求，快速划过则不触发
           const timer = setTimeout(() => {
             hoverTimers.delete(postId);
-            if (!en.target.isConnected || ctx.windowEpoch !== Number(en.target.dataset.windowEpoch)) return;
+            if (!en.target.isConnected) return;
             loadForNode(en.target).catch(() => { fetched.delete(postId); });
           }, REPLIES_HOVER_DELAY);
           hoverTimers.set(postId, timer);
@@ -3577,6 +3635,8 @@
       unobserve(node) { if (node) observer.unobserve(node); },
       clearNode,
       loadForNode,
+      setScrollActive(active) { scrollActive = !!active; },
+      flushPendingReplies,
       revealPath(path) {
         const posts = (path || []).filter(Boolean);
         if (posts.length < 2) return null;
@@ -3598,9 +3658,11 @@
         return ctx.nodeMap.get(Number(posts[posts.length - 1].post_number)) || null;
       },
       disconnect() {
-      hoverTimers.forEach((timer) => clearTimeout(timer));
-      hoverTimers.clear();
-      nativeDisconnect();
+        hoverTimers.forEach((timer) => clearTimeout(timer));
+        hoverTimers.clear();
+        pendingReplies.clear();
+        appliedReplyParents.clear();
+        nativeDisconnect();
       },
     };
     return controller;
@@ -3965,6 +4027,7 @@
     let stream = [];
     let streamIndex = new Map();
     const cache = new Map();
+    const postRevisions = new Map();
     const postIdByNumber = new Map();
     const parentNumberByPostId = new Map();
     const childrenByParentNumber = new Map();
@@ -3982,6 +4045,11 @@
     let snapshotWriting = false;
     let projectionRevision = 0;
     let projectionScheduled = false;
+
+    const bumpPostRevision = (postId) => {
+      const id = Number(postId);
+      postRevisions.set(id, (postRevisions.get(id) || 0) + 1);
+    };
 
     const emitProjection = () => {
       if (projectionScheduled) return;
@@ -4030,6 +4098,7 @@
         const id = Number(post.id);
         const next = Object.assign({}, cache.get(id) || {}, post);
         cache.set(id, next);
+        bumpPostRevision(id);
         projectionChanged = indexPost(next) || projectionChanged;
         return next;
       });
@@ -4108,10 +4177,16 @@
       if (!data) return null;
       topic = data;
       (cachedEntries || []).forEach((entry) => {
-        if (Array.isArray(entry) && entry[1]) cache.set(Number(entry[0]), entry[1]);
+        if (Array.isArray(entry) && entry[1]) {
+          cache.set(Number(entry[0]), entry[1]);
+          bumpPostRevision(entry[0]);
+        }
       });
       const initialPosts = (data.post_stream && data.post_stream.posts) || [];
-      initialPosts.forEach((post) => cache.set(Number(post.id), Object.assign({}, cache.get(Number(post.id)) || {}, post)));
+      initialPosts.forEach((post) => {
+        cache.set(Number(post.id), Object.assign({}, cache.get(Number(post.id)) || {}, post));
+        bumpPostRevision(post.id);
+      });
       rebuildReplyIndex();
       const opPost = initialPosts.find((post) => Number(post.post_number) === 1)
         || Array.from(cache.values()).find((post) => Number(post.post_number) === 1) || null;
@@ -4318,6 +4393,7 @@
       const next = typeof updater === 'function' ? updater(Object.assign({}, current)) : Object.assign({}, current, updater || {});
       if (!next) return current;
       cache.set(id, next);
+      bumpPostRevision(id);
       if (indexPost(next)) emitProjection();
       emitPosts([next]);
       scheduleSnapshotWrite();
@@ -4352,6 +4428,7 @@
       },
       getCachedByIndex(index) { return cache.get(Number(stream[index])) || null; },
       getPostById(postId) { return cache.get(Number(postId)) || null; },
+      getPostRevision(postId) { return postRevisions.get(Number(postId)) || 0; },
       getPostByNumber,
       getStreamIds() { return stream.slice(); },
       getRootStreamIds,
@@ -4379,6 +4456,7 @@
     const SEEK_QUIET_MS = 120;
     const SEEK_MAX_MS = 500;
     const MANUAL_SCROLL_QUIET_MS = 180;
+    const USER_SCROLL_IDLE_MS = 350;
     const DISCONTINUOUS_SCROLL_SCREENS = 1.5;
     const displayStreamIds = () => onlyOp
       ? loader.getStreamIds().filter((id) => (loader.getPostById(id) || {}).username === ctx.op)
@@ -4392,7 +4470,6 @@
     let mountedEnd = -1;
     let scrollRaf = 0;
     let resizeRaf = 0;
-    let postResizeRaf = 0;
     let interactionRevision = 0;
     let destroyed = false;
     let onlyOp = false;
@@ -4416,6 +4493,11 @@
     let preferredFocusPostId = 0;
     let preferredViewportAnchor = null;
     let preferredProtectedUntil = 0;
+    let userScrollActive = false;
+    let userScrollTimer = 0;
+    let pendingProjectionReconcile = false;
+    let projectionReconcileQueued = false;
+    let projectionReconcileRunning = false;
     const pendingResizeHeights = new Map();
     const resizeObserver = new ResizeObserver((entries) => {
       if (destroyed || committing || !entries.length) return;
@@ -4581,12 +4663,25 @@
       bottomSpacer.style.height = `${Math.max(0, bottom)}px`;
     }
 
-    function clearWindow() {
-      resizeObserver.disconnect();
-      ctx.nodeMap.forEach((node) => {
+    function unregisterRootNode(rootNode) {
+      if (!rootNode) return;
+      resizeObserver.unobserve(rootNode);
+      rootNode.querySelectorAll('.ldp-post[data-post-id]').forEach((node) => {
         ctx.tracker.unobserve(node);
         if (ctx.repliesIO && ctx.repliesIO.clearNode) ctx.repliesIO.clearNode(node);
+        const postNumber = Number(node.dataset.postNumber);
+        if (ctx.nodeMap.get(postNumber) === node) ctx.nodeMap.delete(postNumber);
       });
+      if (rootNode.matches && rootNode.matches('.ldp-post[data-post-id]')) {
+        ctx.tracker.unobserve(rootNode);
+        if (ctx.repliesIO && ctx.repliesIO.clearNode) ctx.repliesIO.clearNode(rootNode);
+        const postNumber = Number(rootNode.dataset.postNumber);
+        if (ctx.nodeMap.get(postNumber) === rootNode) ctx.nodeMap.delete(postNumber);
+      }
+    }
+
+    function clearWindow() {
+      Array.from(windowEl.children).forEach(unregisterRootNode);
       ctx.windowEpoch += 1;
       ctx.nodeMap.clear();
       windowEl.replaceChildren();
@@ -4639,21 +4734,11 @@
         ctx.scrollRoot.scrollTop += beforeAnchorDelta;
         viewportWasAtBottom = isAtBottom();
         stableViewportAnchor = anchor || stableViewportAnchor;
-      } else if (anchor && (anchor.pinned || Number.isFinite(Number(anchor.viewportOffset)))) restoreViewportAnchor(anchor);
-      else restoreAnchor(anchor);
-      if (postResizeRaf) cancelAnimationFrame(postResizeRaf);
-      if (Math.abs(beforeAnchorDelta) >= 0.5) return;
-      const revision = interactionRevision;
-      let remainingFrames = 12;
-      const stabilize = () => {
-        postResizeRaf = 0;
-        if (destroyed || revision !== interactionRevision || !anchor) return;
-        if (anchor.pinned || Number.isFinite(Number(anchor.viewportOffset))) restoreViewportAnchor(anchor);
-        else restoreAnchor(anchor);
-        remainingFrames -= 1;
-        if (remainingFrames > 0) postResizeRaf = requestAnimationFrame(stabilize);
-      };
-      postResizeRaf = requestAnimationFrame(stabilize);
+      } else if (!userScrollActive && anchor && (anchor.pinned || Number.isFinite(Number(anchor.viewportOffset)))) {
+        restoreViewportAnchor(anchor);
+      } else if (!userScrollActive) {
+        restoreAnchor(anchor);
+      }
     }
 
     function withViewportAnchor(mutator) {
@@ -4673,40 +4758,88 @@
       }
     }
 
+    function prepareReplyState(post) {
+      const knownChildren = loader.getKnownChildren(post.post_number);
+      if (knownChildren.length) {
+        const state = mergeSubReplyState(post.post_number, knownChildren, ctx);
+        if (!state.renderedCount) state.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length);
+      }
+    }
+
+    function renderTreeRevision(post, ancestry) {
+      if (!post || !post.id) return 'missing';
+      const id = Number(post.id);
+      const seen = ancestry || new Set();
+      if (seen.has(id)) return `${id}:cycle`;
+      const nextSeen = new Set(seen);
+      nextSeen.add(id);
+      const state = ctx.subReplyState.get(Number(post.post_number));
+      const targets = state && state.targetIds instanceof Set
+        ? Array.from(state.targetIds).sort((a, b) => a - b).join(',') : '';
+      const children = loader.getKnownChildren(post.post_number)
+        .map((child) => renderTreeRevision(child, nextSeen)).join(';');
+      return `${onlyOp ? 'op' : 'all'}:${id}:${loader.getPostRevision(id)}:${Number(state && state.renderedCount) || 0}:${targets}[${children}]`;
+    }
+
+    function rebuildNodeMap() {
+      ctx.nodeMap.clear();
+      windowEl.querySelectorAll('.ldp-post[data-post-number]').forEach((node) => {
+        ctx.nodeMap.set(Number(node.dataset.postNumber), node);
+      });
+    }
+
     function renderWindow(entries) {
-      clearWindow();
+      const previous = new Map(Array.from(windowEl.children).map((node) => [String(node.dataset.streamPostId || ''), node]));
+      const retained = new Set();
       const fragment = document.createDocumentFragment();
       entries.forEach(({ id, post }) => {
         if (!post) {
-          const placeholder = document.createElement('div');
-          placeholder.className = 'ldp-missing-post';
+          let placeholder = previous.get(String(id));
+          if (!placeholder || !placeholder.classList.contains('ldp-missing-post')) {
+            placeholder = document.createElement('div');
+            placeholder.className = 'ldp-missing-post';
+          }
           placeholder.dataset.streamPostId = String(id);
           placeholder.setAttribute('aria-hidden', 'true');
+          retained.add(placeholder);
           fragment.appendChild(placeholder);
           return;
         }
         if (!onlyOp && loader.isNestedPostId(id)) return;
-        const node = renderPost(post, false, ctx);
+        prepareReplyState(post);
+        const revision = renderTreeRevision(post);
+        const previousNode = previous.get(String(id));
+        let node = previousNode && previousNode.classList.contains('ldp-post')
+          && previousNode.dataset.renderRevision === revision ? previousNode : null;
+        if (!node) {
+          if (previousNode) unregisterRootNode(previousNode);
+          node = renderPost(post, false, ctx);
+          node.dataset.renderRevision = revision;
+          ctx.tracker.observe(node);
+          if (ctx.repliesIO && Number(post.reply_count) > 0) ctx.repliesIO.observe(node);
+        }
         node.dataset.streamPostId = String(id);
-        ctx.nodeMap.set(Number(post.post_number), node);
-        ctx.tracker.observe(node);
-        if (ctx.repliesIO && Number(post.reply_count) > 0) ctx.repliesIO.observe(node);
+        node.dataset.windowEpoch = String(ctx.windowEpoch + 1);
+        retained.add(node);
         fragment.appendChild(node);
       });
-      windowEl.appendChild(fragment);
+      previous.forEach((node) => {
+        if (!retained.has(node)) unregisterRootNode(node);
+      });
+      ctx.windowEpoch += 1;
+      windowEl.replaceChildren(fragment);
+      rebuildNodeMap();
       entries.forEach(({ post }) => {
         if (!post) return;
         const parent = ctx.nodeMap.get(Number(post.post_number));
         if (!parent || onlyOp) return;
-        const knownChildren = loader.getKnownChildren(post.post_number);
-        if (knownChildren.length) {
-          const state = mergeSubReplyState(post.post_number, knownChildren, ctx);
-          if (!state.renderedCount) state.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length);
-        }
-        if (ctx.subReplyState.has(Number(post.post_number))) {
+        if (parent.dataset.renderRevision === renderTreeRevision(post)
+          && ctx.subReplyState.has(Number(post.post_number))
+          && !parent.querySelector(':scope > .ldp-children > .ldp-post-copy')) {
           renderSubReplyStateInto(parent, post.post_number, ctx, 1, new Set([Number(post.id)]));
         }
       });
+      rebuildNodeMap();
     }
 
     function settleMountRequest(request, value, error) {
@@ -4829,6 +4962,47 @@
       return node && ctx.scrollRoot.contains(node) ? loader.getPostById(node.dataset.postId) : null;
     }
 
+    function requestProjectionReconcile() {
+      pendingProjectionReconcile = true;
+      if (destroyed || userScrollActive || projectionReconcileQueued || projectionReconcileRunning) return;
+      projectionReconcileQueued = true;
+      queueMicrotask(async () => {
+        projectionReconcileQueued = false;
+        if (destroyed || userScrollActive || !pendingProjectionReconcile) return;
+        pendingProjectionReconcile = false;
+        projectionReconcileRunning = true;
+        try {
+          await reconcileStream(displayStreamIds());
+        } catch (error) {
+          if (!error || error.name !== 'AbortError') console.warn('[LinuxDo Reader] 回复投影更新失败', error);
+        } finally {
+          projectionReconcileRunning = false;
+          if (pendingProjectionReconcile) requestProjectionReconcile();
+        }
+      });
+    }
+
+    function setUserScrollActive(active) {
+      const next = !!active;
+      if (userScrollActive === next) return;
+      userScrollActive = next;
+      if (ctx.repliesIO && ctx.repliesIO.setScrollActive) ctx.repliesIO.setScrollActive(next);
+      if (!next) {
+        if (!destroyed && ctx.repliesIO && ctx.repliesIO.flushPendingReplies) ctx.repliesIO.flushPendingReplies();
+        if (!destroyed && pendingProjectionReconcile) requestProjectionReconcile();
+      }
+    }
+
+    function noteUserScroll() {
+      if (destroyed || committing || seekingScroll) return;
+      setUserScrollActive(true);
+      if (userScrollTimer) clearTimeout(userScrollTimer);
+      userScrollTimer = setTimeout(() => {
+        userScrollTimer = 0;
+        setUserScrollActive(false);
+      }, USER_SCROLL_IDLE_MS);
+    }
+
     function onScroll(event) {
       const nextScrollTop = ctx.scrollRoot.scrollTop;
       const viewport = Math.max(1, ctx.scrollRoot.clientHeight);
@@ -4839,6 +5013,7 @@
       const treatAsManual = manualScrollActive
         || (discontinuous && (syntheticScroll
           || (!preferredViewportAnchor && performance.now() >= preferredProtectedUntil)));
+      if (treatAsManual && !seekingScroll) noteUserScroll();
       if (treatAsManual && !seekingScroll) {
         preferredFocusPostId = 0;
         preferredViewportAnchor = null;
@@ -4919,6 +5094,7 @@
       preferredProtectedUntil = 0;
       interactionRevision += 1;
       manualScrollActive = true;
+      noteUserScroll();
       scheduleManualScrollRelease();
     }
 
@@ -4994,7 +5170,13 @@
       if (node) {
         ctx.highlightPostId = Number(node.dataset.postId) || Number(target && target.targetPostId) || 0;
         ctx.highlightUntil = Date.now() + 1700;
-        node.classList.add('ldp-flash');
+        const applyHighlight = () => {
+          if (!ctx.highlightPostId || Date.now() >= ctx.highlightUntil) return;
+          windowEl.querySelectorAll(`.ldp-post[data-post-id="${Number(ctx.highlightPostId)}"]`)
+            .forEach((item) => item.classList.add('ldp-flash'));
+        };
+        applyHighlight();
+        requestAnimationFrame(() => requestAnimationFrame(applyHighlight));
         setTimeout(() => {
           if (Number(ctx.highlightPostId) !== Number(node.dataset.postId) || Date.now() < ctx.highlightUntil) return;
           windowEl.querySelectorAll(`.ldp-post[data-post-id="${Number(ctx.highlightPostId)}"]`)
@@ -5093,9 +5275,16 @@
     rebuildPrefix();
     syncSpacers();
     ctx.withViewportAnchor = withViewportAnchor;
-    const unsubscribeStream = loader.subscribeStream(() => reconcileStream(displayStreamIds()).catch(() => {}));
+    ctx.refreshRenderRevision = (node) => {
+      if (!node || !node.isConnected) return;
+      let rootNode = node;
+      while (rootNode.parentElement && rootNode.parentElement !== windowEl) rootNode = rootNode.parentElement;
+      const post = loader.getPostById(rootNode.dataset.postId);
+      if (post) rootNode.dataset.renderRevision = renderTreeRevision(post);
+    };
+    const unsubscribeStream = loader.subscribeStream(() => requestProjectionReconcile());
     const unsubscribeProjection = loader.subscribeProjection(() => {
-      if (!onlyOp) reconcileStream(displayStreamIds()).catch(() => {});
+      if (!onlyOp) requestProjectionReconcile();
     });
     const unsubscribePosts = loader.subscribePosts((posts) => {
       const root = ctx.commentsEl.closest('.ldp-shell') || ctx.commentsEl;
@@ -5140,7 +5329,9 @@
         unsubscribeStream(); unsubscribeProjection(); unsubscribePosts();
         cancelAnimationFrame(scrollRaf);
         cancelAnimationFrame(resizeRaf);
-        cancelAnimationFrame(postResizeRaf);
+        if (userScrollTimer) clearTimeout(userScrollTimer);
+        userScrollTimer = 0;
+        setUserScrollActive(false);
         clearPinnedAnchor();
         clearManualScrollAnchor();
         if (queuedMount) settleMountRequest(queuedMount, false);
@@ -5152,6 +5343,7 @@
         ctx.scrollRoot.removeEventListener('pointerdown', releasePinnedOnPointer);
         document.removeEventListener('keydown', releasePinnedOnKey, true);
         if (ctx.withViewportAnchor === withViewportAnchor) ctx.withViewportAnchor = null;
+        if (ctx.refreshRenderRevision) ctx.refreshRenderRevision = null;
         clearWindow();
       },
     };
