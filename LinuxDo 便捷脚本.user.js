@@ -44,6 +44,7 @@
   const TOPIC_CACHE_STALE_MS = 7 * 24 * 60 * 60 * 1000;
   const TOPIC_CACHE_MAX_COUNT = 50;
   const TOPIC_CACHE_MAX_BYTES = 25 * 1024 * 1024;
+  const TOPIC_SNAPSHOT_WRITES = new Map();
   const HISTORY_KEY = 'ldp-reader-history-v1';
   const DB_NAME = 'linuxdo-convenience-reader-v1';
   const DB_VERSION = 1;
@@ -495,7 +496,6 @@
     .ldp-v2 .ldp-obsidian-settings:hover{border-color:#85aa96;color:#176c43;background:#edf6f1;}
     .ldp-toolbtn.active{border-color:#5f9f7d;color:#176c43;background:#e4f2ea;}
     .ldp-collections-tool:hover,.ldp-collections-tool.active{border-color:#55998d;color:#12665a;background:#e5f3f0;}
-    .ldp-topic-bookmark.bookmarked{border-color:#d2a24e;color:#8a5514;background:#fff2d8;}
     .ldp-toolbtn svg,.ldp-v2 .ldp-close svg{width:16px;height:16px;fill:currentColor;}
     .ldp-tool-separator{width:1px;height:22px;margin:0 2px;background:var(--primary-low,#dfe4e1);}
     .ldp-v2 .ldp-head-btns{gap:5px;}
@@ -544,6 +544,9 @@
     .ldp-thread-toggle{margin:0 0 5px 31px;padding:0;border:0;color:#28724d;background:transparent;cursor:pointer;font-size:11px;}
     .ldp-children{margin-left:31px;border-left:2px solid #74aa8c;}
     .ldp-children > .ldp-post-copy{margin:0;padding-left:12px;background:var(--secondary,#fff);}
+    .ldp-post-copy > .ldp-children{margin-left:18px;}
+    .ldp-post-copy.ldp-reply-depth-capped > .ldp-children{margin-left:0;}
+    .ldp-reply-gap{padding:6px 10px;color:var(--primary-medium,#777);font-size:11px;border-bottom:1px dashed var(--primary-low,#ddd);}
     .ldp-reaction-picker{display:none;align-items:center;gap:4px;width:max-content;margin:5px 0 0 38px;padding:5px;
       border:1px solid var(--primary-low,#dfe4e1);border-radius:6px;background:var(--secondary,#fff);box-shadow:0 8px 24px rgba(24,35,28,.14);}
     .ldp-reaction-picker.open{display:flex;}
@@ -982,6 +985,8 @@
   }
 
   async function readTopicSnapshot(topicId, signal) {
+    const pendingWrite = TOPIC_SNAPSHOT_WRITES.get(String(topicId));
+    if (pendingWrite) await pendingWrite.catch(() => {});
     const identity = await topicCacheKey(topicId, signal);
     if (!identity) return null;
     const record = await readDbRecord('topics', identity.key);
@@ -2924,6 +2929,9 @@
     content.querySelectorAll('iframe').forEach((iframe) => {
       if (!iframe.hasAttribute('loading')) iframe.setAttribute('loading', 'lazy');
     });
+    if (Number(ctx.highlightPostId) === Number(p.id) && Date.now() < Number(ctx.highlightUntil || 0)) {
+      node.classList.add('ldp-flash');
+    }
     enhanceCodeBlocks(node);
     return node;
   }
@@ -3023,29 +3031,93 @@
   }
 
   /* ============ 9. 楼中楼分批渲染 ============ */
-  function renderSubReplyState(postNumber, ctx) {
-    const state = ctx.subReplyState.get(postNumber);
-    const parentNode = ctx.nodeMap.get(postNumber) || ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`);
+  function mergeSubReplyState(postNumber, replies, ctx, targetPostId) {
+    const existing = ctx.subReplyState.get(Number(postNumber));
+    const byId = new Map();
+    [...((existing && existing.all) || []), ...(replies || [])].forEach((reply) => {
+      if (!reply || !reply.id || Number(reply.reply_to_post_number) !== Number(postNumber)) return;
+      const canonical = ctx.loader.getPostById(reply.id) || reply;
+      byId.set(Number(canonical.id), canonical);
+    });
+    const state = existing || { all: [], renderedCount: 0, targetIds: new Set() };
+    state.all = Array.from(byId.values()).sort((a, b) => Number(a.post_number) - Number(b.post_number));
+    if (!(state.targetIds instanceof Set)) state.targetIds = new Set(state.targetIds || []);
+    if (targetPostId) state.targetIds.add(Number(targetPostId));
+    state.renderedCount = Math.max(Number(state.renderedCount) || 0, Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length));
+    ctx.subReplyState.set(Number(postNumber), state);
+    return state;
+  }
+
+  function clearRenderedReplyChildren(children, ctx) {
+    if (!children) return;
+    children.querySelectorAll('.ldp-post[data-post-id]').forEach((node) => {
+      ctx.tracker.unobserve(node);
+      if (ctx.repliesIO && ctx.repliesIO.clearNode) ctx.repliesIO.clearNode(node);
+      const postNumber = Number(node.dataset.postNumber);
+      if (ctx.nodeMap.get(postNumber) === node) ctx.nodeMap.delete(postNumber);
+    });
+    children.replaceChildren();
+  }
+
+  function renderSubReplyStateInto(parentNode, postNumber, ctx, depth, ancestry) {
+    const state = ctx.subReplyState.get(Number(postNumber));
     if (!state || !parentNode) return;
-    const mutate = () => {
-      const children = parentNode.querySelector(':scope > .ldp-children');
-      if (children) {
-        children.replaceChildren();
-        state.all.slice(0, state.renderedCount).forEach((reply) => {
-          const copy = renderPost(ctx.loader.getPostById(reply.id) || reply, true, ctx);
-          copy.classList.add('ldp-post-copy');
-          copy.setAttribute('aria-label', `#${reply.post_number} 的直属回复副本`);
-          children.appendChild(copy);
-        });
+    const children = parentNode.querySelector(':scope > .ldp-children');
+    if (!children) return;
+    clearRenderedReplyChildren(children, ctx);
+    const selected = [];
+    state.all.forEach((reply, index) => {
+      if (index < state.renderedCount || state.targetIds.has(Number(reply.id))) selected.push({ reply, index });
+    });
+    let previousIndex = -1;
+    selected.forEach(({ reply, index }) => {
+      if (index - previousIndex > 1) {
+        const gap = document.createElement('div');
+        gap.className = 'ldp-reply-gap';
+        gap.textContent = `省略 ${index - previousIndex - 1} 条回复`;
+        children.appendChild(gap);
       }
-      const actionEl = parentNode.querySelector(':scope > .ldp-sub-actions');
-      const btnEl = actionEl && actionEl.querySelector('.ldp-load-more-replies');
-      const remaining = state.all.length - state.renderedCount;
-      if (remaining > 0) {
-        if (actionEl) actionEl.style.display = 'block';
-        if (btnEl) btnEl.textContent = `展示更多回复（还剩 ${remaining} 条） ↓`;
-      } else if (actionEl) actionEl.style.display = 'none';
-    };
+      previousIndex = index;
+      const canonical = ctx.loader.getPostById(reply.id) || reply;
+      if (ancestry.has(Number(canonical.id))) return;
+      const copy = renderPost(canonical, true, ctx);
+      const nextDepth = Math.max(1, Number(depth) || 1);
+      copy.classList.add('ldp-post-copy');
+      copy.dataset.replyDepth = String(nextDepth);
+      if (nextDepth >= 3) copy.classList.add('ldp-reply-depth-capped');
+      copy.setAttribute('aria-label', `#${canonical.post_number} 的直属回复`);
+      children.appendChild(copy);
+      ctx.nodeMap.set(Number(canonical.post_number), copy);
+      ctx.tracker.observe(copy);
+      if (ctx.repliesIO && Number(canonical.reply_count) > 0) ctx.repliesIO.observe(copy);
+
+      const knownChildren = ctx.loader.getKnownChildren(canonical.post_number);
+      if (knownChildren.length) {
+        const childState = mergeSubReplyState(canonical.post_number, knownChildren, ctx);
+        if (!childState.renderedCount) childState.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, childState.all.length);
+        const nextAncestry = new Set(ancestry); nextAncestry.add(Number(canonical.id));
+        renderSubReplyStateInto(copy, canonical.post_number, ctx, nextDepth + 1, nextAncestry);
+      }
+    });
+    if (state.all.length - previousIndex > 1 && state.targetIds.size) {
+      const gap = document.createElement('div');
+      gap.className = 'ldp-reply-gap';
+      gap.textContent = `省略 ${state.all.length - previousIndex - 1} 条回复`;
+      children.appendChild(gap);
+    }
+    const actionEl = parentNode.querySelector(':scope > .ldp-sub-actions');
+    const btnEl = actionEl && actionEl.querySelector('.ldp-load-more-replies');
+    const remaining = Math.max(0, state.all.length - state.renderedCount);
+    if (remaining > 0) {
+      if (actionEl) actionEl.style.display = 'block';
+      if (btnEl) btnEl.textContent = `展示更多回复（还剩 ${remaining} 条） ↓`;
+    } else if (actionEl) actionEl.style.display = 'none';
+  }
+
+  function renderSubReplyState(postNumber, ctx) {
+    const parentNode = ctx.nodeMap.get(Number(postNumber)) || ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`);
+    if (!parentNode) return;
+    const mutate = () => renderSubReplyStateInto(parentNode, postNumber, ctx, 1, new Set([Number(parentNode.dataset.postId)]));
     if (ctx.withViewportAnchor) ctx.withViewportAnchor(mutate);
     else mutate();
   }
@@ -3408,59 +3480,76 @@
   /* ============ 11. 楼中楼补全（分批渲染 + 节流 + 停顿检测） ============ */
   function createRepliesIO(ctx) {
     const fetched = new Set();
+    const inFlight = new Map();
     const hoverTimers = new Map();
+
+    const applyReplies = (node, replies, targetPostId) => {
+      if (!node || !node.isConnected) return null;
+      const postId = Number(node.dataset.postId);
+      const postNumber = Number(node.dataset.postNumber);
+      const canonicalReplies = (replies || []).map((reply) => ctx.loader.mergePost(reply) || reply);
+      const knownReplies = ctx.loader.getKnownChildren(postNumber);
+      const merged = [...knownReplies, ...canonicalReplies];
+      if (replies) ctx.subReplyCache.set(String(postId), canonicalReplies);
+      const state = mergeSubReplyState(postNumber, merged, ctx, targetPostId);
+      if (!state.renderedCount) state.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length);
+      renderSubReplyState(postNumber, ctx);
+      if (ctx.onPostsChanged) ctx.onPostsChanged();
+      return state;
+    };
+
+    const loadForNode = async (node, options) => {
+      if (!node || !node.isConnected) return [];
+      const postId = String(node.dataset.postId || '');
+      const targetPostId = options && options.targetPostId;
+      if (!postId) return [];
+      if (ctx.subReplyCache.has(postId)) {
+        const cached = ctx.subReplyCache.get(postId) || [];
+        applyReplies(node, cached, targetPostId);
+        return cached;
+      }
+      if (inFlight.has(postId)) {
+        const replies = await inFlight.get(postId);
+        applyReplies(node, replies, targetPostId);
+        return replies;
+      }
+      const loadingEl = node.querySelector(':scope > .ldp-sub-loading');
+      if (loadingEl) {
+        const showLoading = () => { loadingEl.style.display = 'block'; };
+        if (ctx.withViewportAnchor) ctx.withViewportAnchor(showLoading); else showLoading();
+      }
+      const request = fetchJSON(`${BASE}/posts/${postId}/replies.json`, {
+        signal: ctx.signal, priority: options && options.priority === 'target' ? 'target' : 'visible',
+        dedupeKey: `direct-replies:${BASE}:${postId}`,
+      }).then((items) => Array.isArray(items) ? items : []);
+      inFlight.set(postId, request);
+      try {
+        const replies = await request;
+        fetched.add(postId);
+        if (node.isConnected) applyReplies(node, replies, targetPostId);
+        return replies;
+      } finally {
+        inFlight.delete(postId);
+        if (loadingEl && loadingEl.isConnected) {
+          const hideLoading = () => { loadingEl.style.display = 'none'; };
+          if (ctx.withViewportAnchor) ctx.withViewportAnchor(hideLoading); else hideLoading();
+        }
+      }
+    };
 
     const observer = new IntersectionObserver((entries) => {
       entries.forEach((en) => {
-        const postId = en.target.dataset.postId;
-        const postNumber = +en.target.dataset.postNumber;
+        const postId = String(en.target.dataset.postId || '');
         if (!postId) return;
 
         if (en.isIntersecting) {
-          const cachedReplies = ctx.subReplyCache.get(postId);
-          if (cachedReplies) {
-            const existing = ctx.subReplyState.get(postNumber);
-            ctx.subReplyState.set(postNumber, {
-              all: cachedReplies,
-              renderedCount: Math.min(cachedReplies.length, existing ? existing.renderedCount : 0),
-            });
-            if (existing && existing.renderedCount) renderSubReplyState(postNumber, ctx);
-            else renderSubReplyBatch(postNumber, ctx);
-            return;
-          }
+          if (ctx.subReplyCache.has(postId)) { applyReplies(en.target, ctx.subReplyCache.get(postId)); return; }
           if (fetched.has(postId) || hoverTimers.has(postId)) return;
           // 停顿检测：楼层需在视口停留 REPLIES_HOVER_DELAY 才真正发起请求，快速划过则不触发
-          const timer = setTimeout(async () => {
+          const timer = setTimeout(() => {
             hoverTimers.delete(postId);
             if (!en.target.isConnected || ctx.windowEpoch !== Number(en.target.dataset.windowEpoch)) return;
-            fetched.add(postId);
-            const loadingEl = en.target.querySelector(':scope > .ldp-sub-loading');
-            if (loadingEl) {
-              const showLoading = () => { loadingEl.style.display = 'block'; };
-              if (ctx.withViewportAnchor) ctx.withViewportAnchor(showLoading);
-              else showLoading();
-            }
-            try {
-              const replies = await fetchJSON(`${BASE}/posts/${postId}/replies.json`, { signal: ctx.signal });
-              if (!en.target.isConnected || ctx.windowEpoch !== Number(en.target.dataset.windowEpoch)) return;
-              const applyReplies = () => {
-                if (loadingEl) loadingEl.style.display = 'none';
-                if (!replies || !replies.length) return;
-                if (ctx.loader) replies.forEach((reply) => ctx.loader.mergePost(reply));
-                ctx.subReplyCache.set(postId, replies);
-                ctx.subReplyState.set(postNumber, { all: replies, renderedCount: 0 });
-                renderSubReplyBatch(postNumber, ctx); // 首批只渲染 SUB_REPLY_INITIAL_SIZE 条
-              };
-              if (ctx.withViewportAnchor) ctx.withViewportAnchor(applyReplies);
-              else applyReplies();
-            } catch (e) {
-              if (loadingEl) {
-                const hideLoading = () => { loadingEl.style.display = 'none'; };
-                if (ctx.withViewportAnchor) ctx.withViewportAnchor(hideLoading);
-                else hideLoading();
-              }
-              fetched.delete(postId); // 失败允许下次进入视口重试
-            }
+            loadForNode(en.target).catch(() => { fetched.delete(postId); });
           }, REPLIES_HOVER_DELAY);
           hoverTimers.set(postId, timer);
         } else {
@@ -3483,13 +3572,38 @@
       }
     };
     const nativeDisconnect = observer.disconnect.bind(observer);
-    observer.clearNode = clearNode;
-    observer.disconnect = () => {
+    const controller = {
+      observe(node) { if (node) observer.observe(node); },
+      unobserve(node) { if (node) observer.unobserve(node); },
+      clearNode,
+      loadForNode,
+      revealPath(path) {
+        const posts = (path || []).filter(Boolean);
+        if (posts.length < 2) return null;
+        const mutate = () => {
+          for (let index = 0; index < posts.length - 1; index++) {
+            const parent = posts[index], child = posts[index + 1];
+            const parentNode = ctx.nodeMap.get(Number(parent.post_number));
+            mergeSubReplyState(parent.post_number, [child, ...ctx.loader.getKnownChildren(parent.post_number)], ctx, child.id);
+            const state = ctx.subReplyState.get(Number(parent.post_number));
+            if (state && !state.renderedCount) state.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length);
+            if (parentNode) renderSubReplyStateInto(parentNode, parent.post_number, ctx, index + 1, new Set(posts.slice(0, index + 1).map((post) => Number(post.id))));
+          }
+        };
+        if (ctx.withViewportAnchor) ctx.withViewportAnchor(mutate); else mutate();
+        posts.slice(0, -1).forEach((post) => {
+          const node = ctx.nodeMap.get(Number(post.post_number));
+          if (node && Number(post.reply_count) > 0) loadForNode(node, { priority: 'target', targetPostId: posts[posts.length - 1].id }).catch(() => {});
+        });
+        return ctx.nodeMap.get(Number(posts[posts.length - 1].post_number)) || null;
+      },
+      disconnect() {
       hoverTimers.forEach((timer) => clearTimeout(timer));
       hoverTimers.clear();
       nativeDisconnect();
+      },
     };
-    return observer;
+    return controller;
   }
 
   /* ============ 12. 收藏 ============ */
@@ -3851,8 +3965,13 @@
     let stream = [];
     let streamIndex = new Map();
     const cache = new Map();
+    const postIdByNumber = new Map();
+    const parentNumberByPostId = new Map();
+    const childrenByParentNumber = new Map();
+    const orphanReplyIds = new Set();
     const streamListeners = new Set();
     const postListeners = new Set();
+    const projectionListeners = new Set();
     let prefetchedAnchor = null;
     let refreshPromise = null;
     let streamRevision = 0;
@@ -3861,6 +3980,83 @@
     let snapshotDirty = false;
     let snapshotSuspended = 0;
     let snapshotWriting = false;
+    let projectionRevision = 0;
+    let projectionScheduled = false;
+
+    const emitProjection = () => {
+      if (projectionScheduled) return;
+      projectionScheduled = true;
+      queueMicrotask(() => {
+        projectionScheduled = false;
+        projectionRevision += 1;
+        const ids = getRootStreamIds();
+        projectionListeners.forEach((listener) => listener(ids, projectionRevision));
+      });
+    };
+
+    const indexPost = (post) => {
+      if (!post || !post.id) return false;
+      const id = Number(post.id);
+      const postNumber = Number(post.post_number) || 0;
+      const previousParent = parentNumberByPostId.get(id) || 0;
+      const nextParent = Number(post.reply_to_post_number) > 1 ? Number(post.reply_to_post_number) : 0;
+      if (postNumber > 0) postIdByNumber.set(postNumber, id);
+      if (previousParent && previousParent !== nextParent) {
+        const previousChildren = childrenByParentNumber.get(previousParent);
+        if (previousChildren) {
+          previousChildren.delete(id);
+          if (!previousChildren.size) childrenByParentNumber.delete(previousParent);
+        }
+      }
+      if (nextParent) {
+        parentNumberByPostId.set(id, nextParent);
+        if (!childrenByParentNumber.has(nextParent)) childrenByParentNumber.set(nextParent, new Set());
+        childrenByParentNumber.get(nextParent).add(id);
+      } else {
+        parentNumberByPostId.delete(id);
+        orphanReplyIds.delete(id);
+      }
+      return previousParent !== nextParent;
+    };
+
+    const rebuildReplyIndex = () => {
+      postIdByNumber.clear(); parentNumberByPostId.clear(); childrenByParentNumber.clear();
+      cache.forEach(indexPost);
+    };
+
+    const cachePosts = (posts, emit) => {
+      let projectionChanged = false;
+      const changed = (posts || []).filter((post) => post && post.id).map((post) => {
+        const id = Number(post.id);
+        const next = Object.assign({}, cache.get(id) || {}, post);
+        cache.set(id, next);
+        projectionChanged = indexPost(next) || projectionChanged;
+        return next;
+      });
+      if (emit) emitPosts(changed);
+      if (projectionChanged) emitProjection();
+      return changed;
+    };
+
+    function isNestedPostId(postId) {
+      const id = Number(postId);
+      return parentNumberByPostId.has(id) && !orphanReplyIds.has(id);
+    }
+
+    function getRootStreamIds() {
+      return stream.filter((id) => !isNestedPostId(id));
+    }
+
+    function getPostByNumber(postNumber) {
+      const id = postIdByNumber.get(Number(postNumber));
+      return id ? cache.get(id) || null : null;
+    }
+
+    function getKnownChildren(parentPostNumber) {
+      return Array.from(childrenByParentNumber.get(Number(parentPostNumber)) || [])
+        .map((id) => cache.get(Number(id))).filter(Boolean)
+        .sort((a, b) => Number(a.post_number) - Number(b.post_number));
+    }
 
     const emitPosts = (posts) => {
       const changed = (posts || []).filter(Boolean);
@@ -3887,8 +4083,13 @@
       if (!snapshotDirty || snapshotSuspended || snapshotWriting || !topic) return;
       snapshotDirty = false;
       snapshotWriting = true;
-      try { await writeTopicSnapshot(topicId, topic, cache.entries(), signal); }
+      const writePromise = writeTopicSnapshot(topicId, topic, cache.entries());
+      TOPIC_SNAPSHOT_WRITES.set(String(topicId), writePromise);
+      try { await writePromise; }
       finally {
+        if (TOPIC_SNAPSHOT_WRITES.get(String(topicId)) === writePromise) {
+          TOPIC_SNAPSHOT_WRITES.delete(String(topicId));
+        }
         snapshotWriting = false;
         if (snapshotDirty) scheduleSnapshotWrite();
       }
@@ -3910,7 +4111,8 @@
         if (Array.isArray(entry) && entry[1]) cache.set(Number(entry[0]), entry[1]);
       });
       const initialPosts = (data.post_stream && data.post_stream.posts) || [];
-      initialPosts.forEach((post) => cache.set(Number(post.id), post));
+      initialPosts.forEach((post) => cache.set(Number(post.id), Object.assign({}, cache.get(Number(post.id)) || {}, post)));
+      rebuildReplyIndex();
       const opPost = initialPosts.find((post) => Number(post.post_number) === 1)
         || Array.from(cache.values()).find((post) => Number(post.post_number) === 1) || null;
       replaceStream(((data.post_stream && data.post_stream.stream) || [])
@@ -3982,9 +4184,7 @@
           signal: requestSignal || signal, priority: priority || 'visible',
           dedupeKey: `posts:${BASE}:${topicId}:${chunk.join(',')}`,
         });
-        const changed = (part.post_stream && part.post_stream.posts) || [];
-        changed.forEach((post) => cache.set(Number(post.id), post));
-        emitPosts(changed);
+        cachePosts((part.post_stream && part.post_stream.posts) || [], true);
       }));
       if (topic) scheduleSnapshotWrite();
     }
@@ -4019,8 +4219,7 @@
       let anchor = prefetchedAnchor ? await prefetchedAnchor : await fetchAnchor(target);
       prefetchedAnchor = null;
       const anchorPosts = (anchor && anchor.post_stream && anchor.post_stream.posts) || [];
-      anchorPosts.forEach((post) => cache.set(Number(post.id), post));
-      emitPosts(anchorPosts);
+      cachePosts(anchorPosts, true);
       const nearest = nearestPost(anchorPosts, target);
       let indexed = nearest && streamIndex.get(String(nearest.id));
       if (indexed === undefined && nearest && Number(nearest.id) > 0) {
@@ -4037,6 +4236,59 @@
       const posts = await fetchRange(start, end, 'target', requestSignal);
       const resolved = nearestPost(posts, nearest ? nearest.post_number : target);
       return { index, postNumber: resolved ? resolved.post_number : target, start, end, posts };
+    }
+
+    function markOrphanReply(postId) {
+      const id = Number(postId);
+      if (!parentNumberByPostId.has(id) || orphanReplyIds.has(id)) return;
+      orphanReplyIds.add(id);
+      emitProjection();
+    }
+
+    async function resolveExactPost(postNumber, requestSignal) {
+      const expected = Math.max(1, Number(postNumber) || 1);
+      let post = getPostByNumber(expected);
+      if (post) return post;
+      await resolveTarget(expected, requestSignal);
+      post = getPostByNumber(expected);
+      return post && Number(post.post_number) === expected ? post : null;
+    }
+
+    async function resolveThreadTarget(targetPostNumber, requestSignal) {
+      const requested = Math.max(1, Number(targetPostNumber) || 1);
+      if (requested <= 1) {
+        return { index: 0, postNumber: 1, targetPostNumber: 1, rootPostId: null, targetPostId: null, path: [] };
+      }
+      const resolved = await resolveTarget(requested, requestSignal);
+      let targetPost = getPostByNumber(requested)
+        || getPostByNumber(resolved.postNumber)
+        || cache.get(Number(stream[resolved.index])) || null;
+      if (!targetPost) return Object.assign({}, resolved, { targetPostNumber: requested, path: [] });
+
+      const reversePath = [targetPost];
+      const visited = new Set([Number(targetPost.id)]);
+      let current = targetPost;
+      for (let depth = 0; depth < 64 && Number(current.reply_to_post_number) > 1; depth++) {
+        const parent = await resolveExactPost(current.reply_to_post_number, requestSignal);
+        if (!parent || visited.has(Number(parent.id))) {
+          markOrphanReply(current.id);
+          break;
+        }
+        reversePath.push(parent);
+        visited.add(Number(parent.id));
+        current = parent;
+      }
+      const path = reversePath.reverse();
+      const rootPost = path[0] || targetPost;
+      const rootIndex = streamIndex.get(String(rootPost.id));
+      return {
+        index: rootIndex === undefined ? resolved.index : rootIndex,
+        postNumber: Number(rootPost.post_number) || resolved.postNumber,
+        rootPostId: Number(rootPost.id) || null,
+        targetPostId: Number(targetPost.id) || null,
+        targetPostNumber: Number(targetPost.post_number) || requested,
+        path,
+      };
     }
 
     async function loadAll(requestSignal, onBatch) {
@@ -4066,6 +4318,7 @@
       const next = typeof updater === 'function' ? updater(Object.assign({}, current)) : Object.assign({}, current, updater || {});
       if (!next) return current;
       cache.set(id, next);
+      if (indexPost(next)) emitProjection();
       emitPosts([next]);
       scheduleSnapshotWrite();
       return next;
@@ -4075,20 +4328,19 @@
       if (!post || !post.id) return null;
       const id = Number(post.id);
       const next = Object.assign({}, cache.get(id) || {}, post);
-      cache.set(id, next);
       if (Number(next.post_number) > 1 && !streamIndex.has(String(id))) {
         const nextStream = stream.slice();
         const estimated = Math.max(0, Math.min(nextStream.length, Number(next.post_number) - 2));
         nextStream.splice(estimated, 0, id);
         replaceStream(nextStream);
       }
-      emitPosts([next]);
+      cachePosts([next], true);
       scheduleSnapshotWrite();
       return next;
     }
 
     return {
-      init, resolveTarget, fetchRange, fetchIds, loadAll, updatePost, mergePost, flushSnapshot,
+      init, resolveTarget, resolveThreadTarget, fetchRange, fetchIds, loadAll, updatePost, mergePost, flushSnapshot,
       get streamLength() { return stream.length; },
       get streamRevision() { return streamRevision; },
       get topic() { return topic; },
@@ -4100,15 +4352,20 @@
       },
       getCachedByIndex(index) { return cache.get(Number(stream[index])) || null; },
       getPostById(postId) { return cache.get(Number(postId)) || null; },
+      getPostByNumber,
       getStreamIds() { return stream.slice(); },
+      getRootStreamIds,
+      getKnownChildren,
+      isNestedPostId,
       getCachedPosts() { return Array.from(cache.values()); },
       subscribeStream(listener) { streamListeners.add(listener); return () => streamListeners.delete(listener); },
       subscribePosts(listener) { postListeners.add(listener); return () => postListeners.delete(listener); },
+      subscribeProjection(listener) { projectionListeners.add(listener); return () => projectionListeners.delete(listener); },
       destroy() {
         if (snapshotTimer) clearTimeout(snapshotTimer);
         if (snapshotMaxTimer) clearTimeout(snapshotMaxTimer);
         snapshotTimer = snapshotMaxTimer = 0;
-        streamListeners.clear(); postListeners.clear();
+        streamListeners.clear(); postListeners.clear(); projectionListeners.clear();
         if (snapshotDirty) flushSnapshot().catch(() => {});
       },
     };
@@ -4123,7 +4380,10 @@
     const SEEK_MAX_MS = 500;
     const MANUAL_SCROLL_QUIET_MS = 180;
     const DISCONTINUOUS_SCROLL_SCREENS = 1.5;
-    let logicalIds = loader.getStreamIds();
+    const displayStreamIds = () => onlyOp
+      ? loader.getStreamIds().filter((id) => (loader.getPostById(id) || {}).username === ctx.op)
+      : loader.getRootStreamIds();
+    let logicalIds = loader.getRootStreamIds();
     const heightByPostId = new Map();
     let positionByPostId = new Map();
     let heights = logicalIds.map((id) => heightByPostId.get(id) || DEFAULT_HEIGHT);
@@ -4132,6 +4392,8 @@
     let mountedEnd = -1;
     let scrollRaf = 0;
     let resizeRaf = 0;
+    let postResizeRaf = 0;
+    let interactionRevision = 0;
     let destroyed = false;
     let onlyOp = false;
     let onlyOpController = null;
@@ -4151,6 +4413,9 @@
     let lastObservedScrollTop = ctx.scrollRoot.scrollTop;
     let viewportWasAtBottom = false;
     let stableViewportAnchor = null;
+    let preferredFocusPostId = 0;
+    let preferredViewportAnchor = null;
+    let preferredProtectedUntil = 0;
     const pendingResizeHeights = new Map();
     const resizeObserver = new ResizeObserver((entries) => {
       if (destroyed || committing || !entries.length) return;
@@ -4169,7 +4434,12 @@
         if (!resizeRaf) pendingResizeAnchor = null;
         return;
       }
-      if (!pendingResizeAnchor) pendingResizeAnchor = pinnedAnchor || stableViewportAnchor || captureViewportAnchor();
+      if (!pendingResizeAnchor) {
+        const preferredNode = preferredFocusPostId
+          ? windowEl.querySelector(`.ldp-post[data-post-id="${Number(preferredFocusPostId)}"]`) : null;
+        pendingResizeAnchor = pinnedAnchor || preferredViewportAnchor || stableViewportAnchor
+          || captureNodeViewportAnchor(preferredNode) || captureViewportAnchor();
+      }
       if (resizeRaf) return;
       if (pinnedAnchor) notePinnedActivity();
       resizeRaf = requestAnimationFrame(applyResizeUpdates);
@@ -4233,31 +4503,41 @@
       stableViewportAnchor = captureViewportAnchor();
     }
 
+    function captureNodeViewportAnchor(visible) {
+      if (!visible || !visible.isConnected) return null;
+      const rootRect = ctx.scrollRoot.getBoundingClientRect();
+      let rootNode = visible;
+      while (rootNode.parentElement && rootNode.parentElement !== windowEl) rootNode = rootNode.parentElement;
+      const postId = Number(rootNode.dataset.streamPostId);
+      const focusPostId = Number(visible.dataset.postId);
+      const position = positionByPostId.get(postId);
+      if (position === undefined) return null;
+      const post = loader.getPostById(focusPostId || postId);
+      return {
+        postId, focusPostId, position, postNumber: post && Number(post.post_number),
+        viewportOffset: visible.getBoundingClientRect().top - rootRect.top,
+        offset: ctx.scrollRoot.scrollTop - contentTop() - prefix[position],
+      };
+    }
+
     function captureViewportAnchor() {
       if (!logicalIds.length || ctx.scrollRoot.scrollTop < contentTop()) return currentAnchor();
       const rootRect = ctx.scrollRoot.getBoundingClientRect();
-      const nodes = Array.from(windowEl.children).filter((node) => node.dataset.streamPostId);
+      const nodes = Array.from(windowEl.querySelectorAll('.ldp-post[data-post-id]'));
       const visibleNodes = nodes.filter((node) => {
         const rect = node.getBoundingClientRect();
         return rect.bottom > rootRect.top + 1 && rect.top < rootRect.bottom - 1;
       });
       const atBottom = viewportWasAtBottom || isAtBottom();
-      const probeY = rootRect.top + rootRect.height * 0.35;
-      const visible = (atBottom && visibleNodes.length ? visibleNodes[visibleNodes.length - 1] : null)
-        || visibleNodes.find((node) => {
+      const probeY = rootRect.top + Math.min(24, rootRect.height * 0.1);
+      const probeNodes = visibleNodes.filter((node) => {
         const rect = node.getBoundingClientRect();
         return rect.top <= probeY && rect.bottom > probeY;
-      }) || visibleNodes[0];
+      });
+      const visible = (atBottom && visibleNodes.length ? visibleNodes[visibleNodes.length - 1] : null)
+        || probeNodes[probeNodes.length - 1] || visibleNodes[0];
       if (!visible) return currentAnchor();
-      const postId = Number(visible.dataset.streamPostId);
-      const position = positionByPostId.get(postId);
-      if (position === undefined) return currentAnchor();
-      const post = loader.getPostById(postId);
-      return {
-        postId, position, postNumber: post && Number(post.post_number),
-        viewportOffset: visible.getBoundingClientRect().top - rootRect.top,
-        offset: ctx.scrollRoot.scrollTop - contentTop() - prefix[position],
-      };
+      return captureNodeViewportAnchor(visible) || currentAnchor();
     }
 
     function restoreViewportAnchor(anchor) {
@@ -4271,14 +4551,21 @@
       const mapped = positionByPostId.get(Number(anchor.postId));
       const position = mapped === undefined
         ? Math.max(0, Math.min(heights.length - 1, Number(anchor.position) || 0)) : mapped;
-      const node = Array.from(windowEl.children)
+      const rootNode = Array.from(windowEl.children)
         .find((item) => Number(item.dataset.streamPostId) === Number(logicalIds[position]));
+      const focusNode = Number(anchor.focusPostId) && rootNode
+        ? rootNode.querySelector(`.ldp-post[data-post-id="${Number(anchor.focusPostId)}"]`)
+        : null;
+      const node = focusNode || rootNode;
       if (node && Number.isFinite(Number(anchor.viewportOffset))) {
         const rootTop = ctx.scrollRoot.getBoundingClientRect().top;
         const delta = node.getBoundingClientRect().top - rootTop - Number(anchor.viewportOffset);
         if (Math.abs(delta) >= 0.5) ctx.scrollRoot.scrollTop += delta;
         viewportWasAtBottom = isAtBottom();
-        stableViewportAnchor = captureViewportAnchor();
+        stableViewportAnchor = captureNodeViewportAnchor(node) || captureViewportAnchor();
+        if (preferredFocusPostId && Number(anchor.focusPostId) === Number(preferredFocusPostId)) {
+          preferredViewportAnchor = stableViewportAnchor;
+        }
         return;
       }
       const offset = Number.isFinite(Number(anchor.offset)) ? Number(anchor.offset) : -Number(anchor.viewportOffset || 0);
@@ -4332,9 +4619,14 @@
       const anchor = pendingResizeAnchor;
       pendingResizeAnchor = null;
       let changed = false;
+      let beforeAnchorDelta = 0;
+      const anchorPosition = anchor && positionByPostId.get(Number(anchor.postId));
       pendingResizeHeights.forEach((next, postId) => {
         const position = positionByPostId.get(Number(postId));
         if (position === undefined || Math.abs((heights[position] || DEFAULT_HEIGHT) - next) < HEIGHT_EPSILON) return;
+        if (anchorPosition !== undefined && position < anchorPosition) {
+          beforeAnchorDelta += next - (heights[position] || DEFAULT_HEIGHT);
+        }
         heights[position] = next;
         heightByPostId.set(Number(postId), next);
         changed = true;
@@ -4343,8 +4635,25 @@
       if (!changed) return;
       rebuildPrefix();
       syncSpacers();
-      if (anchor && (anchor.pinned || Number.isFinite(Number(anchor.viewportOffset)))) restoreViewportAnchor(anchor);
+      if (Math.abs(beforeAnchorDelta) >= 0.5) {
+        ctx.scrollRoot.scrollTop += beforeAnchorDelta;
+        viewportWasAtBottom = isAtBottom();
+        stableViewportAnchor = anchor || stableViewportAnchor;
+      } else if (anchor && (anchor.pinned || Number.isFinite(Number(anchor.viewportOffset)))) restoreViewportAnchor(anchor);
       else restoreAnchor(anchor);
+      if (postResizeRaf) cancelAnimationFrame(postResizeRaf);
+      if (Math.abs(beforeAnchorDelta) >= 0.5) return;
+      const revision = interactionRevision;
+      let remainingFrames = 12;
+      const stabilize = () => {
+        postResizeRaf = 0;
+        if (destroyed || revision !== interactionRevision || !anchor) return;
+        if (anchor.pinned || Number.isFinite(Number(anchor.viewportOffset))) restoreViewportAnchor(anchor);
+        else restoreAnchor(anchor);
+        remainingFrames -= 1;
+        if (remainingFrames > 0) postResizeRaf = requestAnimationFrame(stabilize);
+      };
+      postResizeRaf = requestAnimationFrame(stabilize);
     }
 
     function withViewportAnchor(mutator) {
@@ -4364,28 +4673,8 @@
       }
     }
 
-    function addReplySummary(node, post) {
-      if (!(Number(post.reply_to_post_number) > 1)) return;
-      node.classList.add('ldp-reply-summary');
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = 'ldp-thread-toggle';
-      toggle.textContent = `回应 #${post.reply_to_post_number} · 展开`;
-      const content = node.querySelector(':scope > .ldp-content');
-      if (content) content.before(toggle);
-    }
-
     function renderWindow(entries) {
       clearWindow();
-      const byParent = new Map();
-      entries.forEach(({ post }) => {
-        if (!post) return;
-        const parent = Number(post.reply_to_post_number) || 0;
-        if (parent > 1) {
-          if (!byParent.has(parent)) byParent.set(parent, []);
-          byParent.get(parent).push(post);
-        }
-      });
       const fragment = document.createDocumentFragment();
       entries.forEach(({ id, post }) => {
         if (!post) {
@@ -4396,9 +4685,9 @@
           fragment.appendChild(placeholder);
           return;
         }
+        if (!onlyOp && loader.isNestedPostId(id)) return;
         const node = renderPost(post, false, ctx);
         node.dataset.streamPostId = String(id);
-        addReplySummary(node, post);
         ctx.nodeMap.set(Number(post.post_number), node);
         ctx.tracker.observe(node);
         if (ctx.repliesIO && Number(post.reply_count) > 0) ctx.repliesIO.observe(node);
@@ -4408,15 +4697,15 @@
       entries.forEach(({ post }) => {
         if (!post) return;
         const parent = ctx.nodeMap.get(Number(post.post_number));
-        const children = parent && parent.querySelector(':scope > .ldp-children');
-        if (!children) return;
-        (byParent.get(Number(post.post_number)) || []).slice(0, SUB_REPLY_INITIAL_SIZE).forEach((reply) => {
-          const copy = renderPost(reply, true, ctx);
-          copy.classList.add('ldp-post-copy');
-          copy.setAttribute('aria-label', `#${reply.post_number} 的直属回复副本`);
-          children.appendChild(copy);
-        });
-        if (ctx.subReplyState.has(Number(post.post_number))) renderSubReplyState(Number(post.post_number), ctx);
+        if (!parent || onlyOp) return;
+        const knownChildren = loader.getKnownChildren(post.post_number);
+        if (knownChildren.length) {
+          const state = mergeSubReplyState(post.post_number, knownChildren, ctx);
+          if (!state.renderedCount) state.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length);
+        }
+        if (ctx.subReplyState.has(Number(post.post_number))) {
+          renderSubReplyStateInto(parent, post.post_number, ctx, 1, new Set([Number(post.id)]));
+        }
       });
     }
 
@@ -4533,26 +4822,50 @@
       return { start, end: Math.min(logicalIds.length, Math.max(start + PAGE_SIZE, position + 1)) };
     }
 
-    function onScroll() {
+    function visibleRenderedPost() {
+      const rect = ctx.scrollRoot.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width * 0.5, rect.top + rect.height * 0.35);
+      const node = hit && hit.closest ? hit.closest('.ldp-post[data-post-id]') : null;
+      return node && ctx.scrollRoot.contains(node) ? loader.getPostById(node.dataset.postId) : null;
+    }
+
+    function onScroll(event) {
       const nextScrollTop = ctx.scrollRoot.scrollTop;
       const viewport = Math.max(1, ctx.scrollRoot.clientHeight);
+      const syntheticScroll = !!(event && event.isTrusted === false);
+      if (syntheticScroll && !seekingScroll && !committing && !manualScrollActive) beginManualScroll();
       const discontinuous = !committing && !seekingScroll && !pinnedAnchor
         && Math.abs(nextScrollTop - lastObservedScrollTop) > viewport * DISCONTINUOUS_SCROLL_SCREENS;
+      const treatAsManual = manualScrollActive
+        || (discontinuous && (syntheticScroll
+          || (!preferredViewportAnchor && performance.now() >= preferredProtectedUntil)));
+      if (treatAsManual && !seekingScroll) {
+        preferredFocusPostId = 0;
+        preferredViewportAnchor = null;
+      }
       lastObservedScrollTop = nextScrollTop;
       if (manualScrollActive || discontinuous || seekingScroll || pinnedAnchor) {
         viewportWasAtBottom = isAtBottom();
-        stableViewportAnchor = manualScrollActive || discontinuous ? currentAnchor() : captureViewportAnchor();
+        stableViewportAnchor = pinnedAnchor || preferredViewportAnchor
+          || (manualScrollActive || discontinuous ? currentAnchor() : captureViewportAnchor());
       }
       if (pinnedAnchor && !seekingScroll) {
-        const mapped = positionByPostId.get(Number(pinnedAnchor.postId));
-        const position = mapped === undefined ? pinnedAnchor.position : mapped;
-        const expected = contentTop() + prefix[position] - pinnedAnchor.viewportOffset;
-        if (Math.abs(ctx.scrollRoot.scrollTop - expected) > 2) clearPinnedAnchor();
+        const focusNode = Number(pinnedAnchor.focusPostId)
+          ? windowEl.querySelector(`.ldp-post[data-post-id="${Number(pinnedAnchor.focusPostId)}"]`) : null;
+        if (focusNode) {
+          const rootTop = ctx.scrollRoot.getBoundingClientRect().top;
+          if (Math.abs(focusNode.getBoundingClientRect().top - rootTop - pinnedAnchor.viewportOffset) > 2) clearPinnedAnchor();
+        } else {
+          const mapped = positionByPostId.get(Number(pinnedAnchor.postId));
+          const position = mapped === undefined ? pinnedAnchor.position : mapped;
+          const expected = contentTop() + prefix[position] - pinnedAnchor.viewportOffset;
+          if (Math.abs(ctx.scrollRoot.scrollTop - expected) > 2) clearPinnedAnchor();
+        }
       }
       if (scrollRaf) return;
       scrollRaf = requestAnimationFrame(() => {
         scrollRaf = 0;
-        if (manualScrollActive || discontinuous) {
+        if (treatAsManual) {
           manualScrollActive = true;
           manualScrollAnchor = currentAnchor();
           scheduleManualScrollRelease();
@@ -4564,7 +4877,7 @@
           }).catch(() => {});
         }
         const anchor = currentAnchor();
-        const post = anchor.aboveContent ? null : loader.getPostById(logicalIds[anchor.position]);
+        const post = visibleRenderedPost() || (anchor.aboveContent ? null : loader.getPostById(logicalIds[anchor.position]));
         if (post && loader.topic) rememberTopicHistory(loader.topic, post.post_number);
       });
     }
@@ -4601,24 +4914,38 @@
 
     function beginManualScroll() {
       clearPinnedAnchor();
+      preferredFocusPostId = 0;
+      preferredViewportAnchor = null;
+      preferredProtectedUntil = 0;
+      interactionRevision += 1;
       manualScrollActive = true;
       scheduleManualScrollRelease();
     }
 
-    async function seekToIndex(streamIndex, desiredPostNumber, options) {
+    async function seekResolvedTarget(target, options) {
+      preferredFocusPostId = Number(target && target.targetPostId) || Number(target && target.rootPostId) || 0;
+      preferredViewportAnchor = null;
+      preferredProtectedUntil = performance.now() + SEEK_MAX_MS;
       if (!logicalIds.length) {
         ctx.scrollRoot.scrollTop = 0;
         return true;
       }
-      const streamId = loader.getStreamIds()[Math.max(0, Math.min(loader.streamLength - 1, Number(streamIndex) || 0))];
-      let position = positionByPostId.get(Number(streamId));
-      if (position === undefined) position = 0;
+      if (Number(target && target.targetPostNumber) <= 1) return scrollToTop();
+      await reconcileStream(displayStreamIds(), { forceCommit: true });
+      const rootPostId = Number(target && target.rootPostId)
+        || Number(loader.getStreamId(Number(target && target.index) || 0));
+      let position = positionByPostId.get(rootPostId);
+      if (position === undefined) {
+        const fallbackPost = loader.getPostByNumber(target && target.postNumber);
+        position = fallbackPost ? positionByPostId.get(Number(fallbackPost.id)) : undefined;
+      }
+      if (position === undefined) position = Math.max(0, Math.min(logicalIds.length - 1, Number(target && target.index) || 0));
       const targetWindow = windowAroundPosition(position);
       const local = position >= mountedStart && position < mountedEnd;
       await mount(targetWindow.start, targetWindow.end, 'target', {
         preserveAnchor: false, forceCommit: true,
       });
-      position = positionByPostId.get(Number(streamId));
+      position = positionByPostId.get(rootPostId);
       if (position === undefined) position = 0;
       const behavior = local && options && options.smooth ? 'smooth' : 'auto';
       const top = contentTop() + prefix[position];
@@ -4629,27 +4956,76 @@
       try {
         ctx.scrollRoot.scrollTo({ top: Math.max(0, top - viewportOffset), behavior });
         if (behavior === 'smooth') await waitForScrollEnd(ctx.scrollRoot);
+        else await new Promise((resolve) => requestAnimationFrame(resolve));
+        lastObservedScrollTop = ctx.scrollRoot.scrollTop;
       } finally {
         seekingScroll = false;
       }
       viewportWasAtBottom = isAtBottom();
       stableViewportAnchor = captureViewportAnchor();
       notePinnedActivity();
-      const node = desiredPostNumber ? ctx.nodeMap.get(Number(desiredPostNumber)) : null;
+      let node = ctx.nodeMap.get(Number(target && target.postNumber));
+      if (target && Array.isArray(target.path) && target.path.length > 1 && ctx.repliesIO) {
+        node = ctx.repliesIO.revealPath(target.path) || node;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        node = ctx.nodeMap.get(Number(target.targetPostNumber)) || node;
+        if (node) {
+          preferredFocusPostId = Number(node.dataset.postId) || preferredFocusPostId;
+          preferredProtectedUntil = performance.now() + SEEK_MAX_MS;
+          clearPinnedAnchor();
+          seekingScroll = true;
+          node.scrollIntoView({ block: 'center', behavior: 'auto' });
+          stableViewportAnchor = captureNodeViewportAnchor(node) || captureViewportAnchor();
+          preferredViewportAnchor = stableViewportAnchor;
+          pinnedAnchor = Object.assign({}, stableViewportAnchor, { pinned: true });
+          pendingResizeAnchor = stableViewportAnchor;
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          lastObservedScrollTop = ctx.scrollRoot.scrollTop;
+          stableViewportAnchor = captureNodeViewportAnchor(node) || captureViewportAnchor();
+          preferredViewportAnchor = stableViewportAnchor;
+          pinnedAnchor = Object.assign({}, stableViewportAnchor, { pinned: true });
+          if (pendingResizeAnchor || pendingResizeHeights.size || resizeRaf) {
+            pendingResizeAnchor = stableViewportAnchor;
+          }
+          seekingScroll = false;
+          notePinnedActivity();
+        }
+      }
       if (node) {
+        ctx.highlightPostId = Number(node.dataset.postId) || Number(target && target.targetPostId) || 0;
+        ctx.highlightUntil = Date.now() + 1700;
         node.classList.add('ldp-flash');
-        setTimeout(() => node.classList.remove('ldp-flash'), 1700);
+        setTimeout(() => {
+          if (Number(ctx.highlightPostId) !== Number(node.dataset.postId) || Date.now() < ctx.highlightUntil) return;
+          windowEl.querySelectorAll(`.ldp-post[data-post-id="${Number(ctx.highlightPostId)}"]`)
+            .forEach((item) => item.classList.remove('ldp-flash'));
+          ctx.highlightPostId = 0;
+          ctx.highlightUntil = 0;
+        }, 1710);
       }
       return true;
     }
 
+    async function seekToIndex(streamIndex, desiredPostNumber, options) {
+      const safeIndex = Math.max(0, Math.min(loader.streamLength - 1, Number(streamIndex) || 0));
+      const streamId = loader.getStreamId(safeIndex);
+      if (streamId && !loader.getPostById(streamId)) await loader.fetchIds([streamId], 'target', ctx.signal);
+      const streamPost = loader.getPostById(streamId);
+      const postNumber = Number(desiredPostNumber) || Number(streamPost && streamPost.post_number) || safeIndex + 2;
+      const target = await loader.resolveThreadTarget(postNumber, ctx.signal);
+      return seekResolvedTarget(target, options);
+    }
+
     async function seekToPost(postNumber) {
-      const resolved = await loader.resolveTarget(postNumber, ctx.signal);
-      return seekToIndex(resolved.index, resolved.postNumber, { smooth: false });
+      const target = await loader.resolveThreadTarget(postNumber, ctx.signal);
+      return seekResolvedTarget(target, { smooth: false });
     }
 
     async function scrollToTop() {
       clearPinnedAnchor();
+      preferredFocusPostId = 0;
+      preferredViewportAnchor = null;
+      preferredProtectedUntil = 0;
       viewportWasAtBottom = false;
       stableViewportAnchor = { aboveContent: true, scrollTop: 0 };
       ctx.scrollRoot.scrollTo({ top: 0, behavior: 'auto' });
@@ -4666,16 +5042,16 @@
       onlyOp = !!enabled;
       if (onlyOpController) onlyOpController.abort();
       onlyOpController = null;
-      await reconcileStream(loader.getStreamIds(), { forceCommit: true });
+      await reconcileStream(displayStreamIds(), { forceCommit: true });
       if (!onlyOp) return;
       onlyOpController = new AbortController();
       const controller = onlyOpController;
       const abortScan = () => controller.abort();
       ctx.signal.addEventListener('abort', abortScan, { once: true });
       loader.loadAll(controller.signal, () => {
-        if (!destroyed && onlyOp && !controller.signal.aborted) reconcileStream(loader.getStreamIds()).catch(() => {});
+        if (!destroyed && onlyOp && !controller.signal.aborted) reconcileStream(displayStreamIds()).catch(() => {});
       }).then(() => {
-        if (!destroyed && onlyOp && !controller.signal.aborted) return reconcileStream(loader.getStreamIds());
+        if (!destroyed && onlyOp && !controller.signal.aborted) return reconcileStream(displayStreamIds());
       }).catch((error) => {
         if (!error || error.name !== 'AbortError') console.warn('[LinuxDo Reader] 只看楼主加载失败', error);
       }).finally(() => ctx.signal.removeEventListener('abort', abortScan));
@@ -4683,8 +5059,12 @@
 
     async function reconcileStream(nextIds, options) {
       if (destroyed) return;
-      const anchor = logicalIds.length ? captureViewportAnchor() : null;
-      logicalIds = (nextIds || []).filter((id) => !onlyOp || (loader.getPostById(id) || {}).username === ctx.op);
+      const preferredNode = preferredFocusPostId
+        ? windowEl.querySelector(`.ldp-post[data-post-id="${Number(preferredFocusPostId)}"]`) : null;
+      const anchor = logicalIds.length
+        ? (pinnedAnchor || manualScrollAnchor || preferredViewportAnchor || captureNodeViewportAnchor(preferredNode)
+          || stableViewportAnchor || captureViewportAnchor()) : null;
+      logicalIds = (nextIds || displayStreamIds()).filter((id) => !onlyOp || (loader.getPostById(id) || {}).username === ctx.op);
       heights = logicalIds.map((id) => heightByPostId.get(Number(id)) || DEFAULT_HEIGHT);
       rebuildPrefix();
       mountedStart = mountedEnd = -1;
@@ -4713,11 +5093,14 @@
     rebuildPrefix();
     syncSpacers();
     ctx.withViewportAnchor = withViewportAnchor;
-    const unsubscribeStream = loader.subscribeStream((ids) => reconcileStream(ids).catch(() => {}));
+    const unsubscribeStream = loader.subscribeStream(() => reconcileStream(displayStreamIds()).catch(() => {}));
+    const unsubscribeProjection = loader.subscribeProjection(() => {
+      if (!onlyOp) reconcileStream(displayStreamIds()).catch(() => {});
+    });
     const unsubscribePosts = loader.subscribePosts((posts) => {
       const root = ctx.commentsEl.closest('.ldp-shell') || ctx.commentsEl;
       posts.forEach((post) => syncRenderedPostState(root, post));
-      if (onlyOp && posts.some((post) => post && post.username === ctx.op)) reconcileStream(loader.getStreamIds()).catch(() => {});
+      if (onlyOp && posts.some((post) => post && post.username === ctx.op)) reconcileStream(displayStreamIds()).catch(() => {});
     });
     const releasePinnedAnchor = () => beginManualScroll();
     const releasePinnedOnPointer = (event) => {
@@ -4736,27 +5119,28 @@
     document.addEventListener('keydown', releasePinnedOnKey, true);
     return {
       async mountInitial(target) {
-        if (Number(target && target.postNumber) <= 1) {
+        if (Number(target && target.targetPostNumber) <= 1) {
           const initialWindow = windowAroundPosition(0);
           await mount(initialWindow.start, initialWindow.end, 'target', {
             preserveAnchor: false, forceCommit: true,
           });
           return scrollToTop();
         }
-        return seekToIndex(target.index || 0, target.postNumber, { smooth: false });
+        return seekResolvedTarget(target, { smooth: false });
       },
       seekToIndex, seekToPost, scrollToTop, setOnlyOp,
       getCurrentPost() {
         const anchor = currentAnchor();
-        return loader.getPostById(logicalIds[anchor.position]);
+        return visibleRenderedPost() || loader.getPostById(logicalIds[anchor.position]);
       },
       refresh() { onScroll(); },
       destroy() {
         destroyed = true;
         if (onlyOpController) onlyOpController.abort();
-        unsubscribeStream(); unsubscribePosts();
+        unsubscribeStream(); unsubscribeProjection(); unsubscribePosts();
         cancelAnimationFrame(scrollRaf);
         cancelAnimationFrame(resizeRaf);
+        cancelAnimationFrame(postResizeRaf);
         clearPinnedAnchor();
         clearManualScrollAnchor();
         if (queuedMount) settleMountRequest(queuedMount, false);
@@ -5005,7 +5389,6 @@
             <button class="ldp-toolbtn ldp-collections-tool" data-reader-action="collections" title="收藏与回应">${READER_ICONS.collection}</button>
             <span class="ldp-tool-separator"></span>
             <span class="ldp-obsidian-host"></span>
-            <button class="ldp-toolbtn ldp-topic-bookmark" data-reader-action="topic-bookmark" title="收藏本帖">${READER_ICONS.bookmark}</button>
             <button class="ldp-toolbtn" data-reader-action="refresh" title="清除当前主题缓存并刷新">${READER_ICONS.refresh}</button>
             <span class="ldp-settings-host"></span>
           </div>
@@ -5155,17 +5538,15 @@
         const settingsButton = obsidianActions.querySelector('.ldp-obsidian-settings');
         obsidianHost.replaceChildren(obsidianActions);
         modal.querySelector('.ldp-settings-host').replaceChildren(settingsButton);
-        const oldBookmark = modal.querySelector('[data-reader-action="topic-bookmark"]');
-        const bookmark = oldBookmark.cloneNode(true); oldBookmark.replaceWith(bookmark);
         const oldFooter = modal.querySelector('.ldp-footer');
         const footer = oldFooter.cloneNode(true); oldFooter.replaceWith(footer);
-        bindBookmarks([bookmark, footer.querySelector('.ldp-f-bookmark')], topic);
+        bindBookmarks([footer.querySelector('.ldp-f-bookmark')], topic);
         app.stopBase64 = bindModalBase64Selection(shell);
         bindActions(shell, ctx);
         if (opNode) bindReaderFooter(footer, ctx, topic, opNode);
         footer.hidden = false;
         tracker.start();
-        const target = await loader.resolveTarget(resolveInitialTarget(topic, targetPostNumber), controller.signal);
+        const target = await loader.resolveThreadTarget(resolveInitialTarget(topic, targetPostNumber), controller.signal);
         if (controller.signal.aborted) return;
         const virtualFlow = createVirtualFlow(loader, ctx);
         app.virtualFlow = virtualFlow;
@@ -5176,10 +5557,6 @@
           scrollToTop: () => virtualFlow.scrollToTop(),
           seekToIndex: async (index, postNumber) => {
             if (Number(postNumber) <= 1) return virtualFlow.scrollToTop();
-            if (postNumber && !loader.getCachedByIndex(index)) {
-              const resolved = await loader.resolveTarget(postNumber, controller.signal);
-              return virtualFlow.seekToIndex(resolved.index, resolved.postNumber, { smooth: false });
-            }
             return virtualFlow.seekToIndex(index, postNumber, { smooth: true });
           },
         };
@@ -5188,7 +5565,7 @@
         await virtualFlow.mountInitial(target);
         if (controller.signal.aborted) return;
         mask.classList.add('hide'); setTimeout(() => mask.remove(), 260);
-        rememberTopicHistory(topic, target.postNumber);
+        rememberTopicHistory(topic, target.targetPostNumber || target.postNumber);
         if (loader.refreshPromise) loader.refreshPromise.then((latest) => {
           if (!latest || controller.signal.aborted || String(app.topicId) !== String(topicId)) return;
           app.topic = latest; ctx.topic = latest; ctx.op = latest._opUsername || ctx.op;

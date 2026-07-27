@@ -54,6 +54,10 @@ async function bootReader(page, options = {}) {
   let rateLimited = false;
   const rateLimitedKeys = new Set();
   const origin = options.origin || 'https://linux.do';
+  const buildPost = (postNumber) => Object.assign(
+    post(postNumber),
+    (options.postOverrides && options.postOverrides[postNumber]) || {},
+  );
   await page.route(`${origin}/**`, async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === '/latest') {
@@ -76,9 +80,11 @@ async function bootReader(page, options = {}) {
     if (url.pathname === `/t/${TOPIC_ID}.json`) {
       const target = Number(url.searchParams.get('post_number'));
       const postCount = (options.topicState && options.topicState.postCount) || POST_COUNT;
+      const missing = Number(options.missingPostNumber) || 0;
       requests.push({ type: target ? 'anchor' : 'topic', target, at: Date.now() });
       const topicOptions = Object.assign({ postCount }, options.topicState || {});
-      await route.fulfill({ json: target ? topicPayload([post(target)], topicOptions) : topicPayload(undefined, topicOptions) });
+      const anchorPosts = target === missing ? [buildPost(Math.max(1, target - 1))] : [buildPost(target)];
+      await route.fulfill({ json: target ? topicPayload(anchorPosts, topicOptions) : topicPayload([buildPost(1)], topicOptions) });
       return;
     }
     if (url.pathname === `/t/${TOPIC_ID}/posts.json`) {
@@ -99,7 +105,7 @@ async function bootReader(page, options = {}) {
       const postsDelay = typeof options.postsDelay === 'function'
         ? Number(options.postsDelay(ids)) || 0 : Number(options.postsDelay) || 0;
       if (postsDelay > 0) await new Promise((resolve) => setTimeout(resolve, postsDelay));
-      await route.fulfill({ json: { post_stream: { posts: ids.filter((id) => id !== postId(missing)).map((id) => post(id - 100000)) } } });
+      await route.fulfill({ json: { post_stream: { posts: ids.filter((id) => id !== postId(missing)).map((id) => buildPost(id - 100000)) } } });
       return;
     }
     if (/^\/posts\/\d+\/replies\.json$/.test(url.pathname)) {
@@ -107,7 +113,7 @@ async function bootReader(page, options = {}) {
       const parentNumber = parentId - 100000;
       const count = Number(options.repliesCount) || 0;
       const replies = Array.from({ length: count }, (_, index) => {
-        const reply = post(Math.min(POST_COUNT, parentNumber + index + 1));
+        const reply = buildPost(Math.min(POST_COUNT, parentNumber + index + 1));
         reply.reply_to_post_number = parentNumber;
         return reply;
       });
@@ -189,7 +195,10 @@ async function bootReader(page, options = {}) {
       return;
     }
     if (url.pathname.endsWith('.png')) {
-      await route.fulfill({ status: 204, body: '' });
+      await route.fulfill({
+        contentType: 'image/png',
+        body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
+      });
       return;
     }
     await route.fulfill({ json: {} });
@@ -219,9 +228,11 @@ async function bootReader(page, options = {}) {
   await page.click('.raw-topic-link');
   await expect(page.locator('.ldp-v2 .ldp-title')).toHaveText('Reader 2.0 performance topic');
   if (!options.skipTargetAssertion) {
-    const target = page.locator(`.ldp-virtual-window > .ldp-post[data-post-number="${options.target || POST_COUNT}"]`);
+    const target = page.locator(`.ldp-post[data-post-number="${options.target || POST_COUNT}"]`);
+    await expect(target).toHaveCount(1);
     await expect(target).toBeVisible();
     await expect(target).toBeInViewport();
+    await expect(target).toHaveClass(/ldp-flash/);
   }
   return requests;
 }
@@ -277,26 +288,31 @@ test('keeps original topic actions in the footer and groups collection tools on 
   await expect(page.locator('.ldp-f-like')).toHaveClass(/liked/);
   await page.locator('.ldp-f-bookmark').click();
   await expect(page.locator('.ldp-f-bookmark')).toHaveClass(/bookmarked/);
-  await expect(page.locator('.ldp-topic-bookmark')).toHaveClass(/bookmarked/);
+  await expect(page.locator('.ldp-topic-bookmark, [data-reader-action="topic-bookmark"]')).toHaveCount(0);
 });
 
 test('preserves the visible anchor when an earlier image changes height', async ({ page }) => {
-  await bootReader(page);
-  const target = page.locator('.ldp-post[data-post-number="2000"]').first();
+  await bootReader(page, { target: 1999 });
+  const target = page.locator('.ldp-post[data-post-number="1999"]').first();
+  await page.locator('.ldp-body').dispatchEvent('wheel', { deltaY: 0 });
+  await target.evaluate((node) => node.scrollIntoView({ block: 'start' }));
+  await page.waitForTimeout(250);
   const before = await target.evaluate((node) => node.getBoundingClientRect().top);
-  await page.locator('[data-test-image]').evaluate((image) => {
-    image.style.height = '80px';
-    image.style.height = '140px';
-    image.style.height = '220px';
-  });
-  await page.waitForTimeout(150);
-  const after = await target.evaluate((node) => node.getBoundingClientRect().top);
-  expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
+  for (const height of [80, 140, 220]) {
+    await page.locator('[data-test-image]').evaluate((image, value) => {
+      image.style.height = `${value}px`;
+    }, height);
+    await page.waitForTimeout(120);
+  }
+  await expect.poll(async () => {
+    const after = await target.evaluate((node) => node.getBoundingClientRect().top);
+    return Math.abs(after - before);
+  }).toBeLessThanOrEqual(2);
 });
 
 test('keeps the current floor fixed while delayed direct replies are inserted above it', async ({ page }) => {
   const requests = await bootReader(page, { target: 10, repliesCount: 15, repliesDelay: 800 });
-  const target = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="10"]');
+  const target = page.locator('.ldp-post[data-post-number="10"]');
   await page.waitForTimeout(550);
   await target.evaluate((node) => node.scrollIntoView({ block: 'start' }));
   await page.waitForTimeout(30);
@@ -309,7 +325,7 @@ test('keeps the current floor fixed while delayed direct replies are inserted ab
     });
     return Number(node && node.dataset.postNumber);
   });
-  expect(visibleAnchor).toBe(10);
+  expect(visibleAnchor).toBe(9);
   const before = await target.evaluate((node) => node.getBoundingClientRect().top);
   await expect.poll(() => requests.filter((item) => item.type === 'replies').length).toBeGreaterThan(0);
   await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"] > .ldp-children > .ldp-post-copy')).toHaveCount(3);
@@ -424,12 +440,16 @@ test('does not jump to the final floor when wheeling beside a short topic scroll
 
 test('reopens a fresh snapshot without refetching the floor slice', async ({ page }) => {
   const requests = await bootReader(page, { target: 100 });
-  const slicesBefore = requests.filter((item) => item.type === 'posts').length;
+  await page.waitForTimeout(1200);
+  const slicesBefore = requests.filter((item) => item.type === 'posts');
+  const cachedIds = new Set(slicesBefore.flatMap((item) => item.ids));
   await page.click('.ldp-v2 .ldp-close');
   await page.click('.raw-topic-link');
-  const target = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="100"]');
+  const target = page.locator('.ldp-post[data-post-number="100"]');
   await expect(target).toBeInViewport();
-  expect(requests.filter((item) => item.type === 'posts').length).toBe(slicesBefore);
+  const reopenedIds = requests.filter((item) => item.type === 'posts')
+    .slice(slicesBefore.length).flatMap((item) => item.ids);
+  expect(reopenedIds.some((id) => cachedIds.has(id))).toBe(false);
 });
 
 test('restores history and loads collection tabs when reactions are unavailable', async ({ page }) => {
@@ -485,13 +505,67 @@ test('keeps the virtual window bounded during long scrolling', async ({ page }) 
   }
 });
 
-test('synchronizes actions between timeline replies and parent copies', async ({ page }) => {
+test('renders a nested reply once and keeps its interaction state canonical', async ({ page }) => {
   await bootReader(page, { target: 10 });
-  const main = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="10"]');
-  const copy = page.locator('.ldp-post[data-post-number="9"] > .ldp-children .ldp-post-copy[data-post-number="10"]');
-  await expect(copy).toBeVisible();
-  await main.locator('.ldp-like').click();
-  await expect(copy.locator('.ldp-like')).toHaveAttribute('data-acted', '1');
+  const nested = page.locator('.ldp-post[data-post-number="9"] > .ldp-children .ldp-post-copy[data-post-number="10"]');
+  await expect(page.locator('.ldp-post[data-post-number="10"]')).toHaveCount(1);
+  await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="10"]')).toHaveCount(0);
+  await nested.locator('.ldp-like').click();
+  await expect(nested.locator('.ldp-like')).toHaveAttribute('data-acted', '1');
+});
+
+test('mounts a distant reply under its exact parent without loading middle ranges', async ({ page }) => {
+  const requests = await bootReader(page, {
+    target: 1500,
+    postOverrides: { 1500: { reply_to_post_number: 9 } },
+  });
+  const parent = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"]');
+  const target = parent.locator('.ldp-children .ldp-post-copy[data-post-number="1500"]');
+  await expect(target).toHaveCount(1);
+  await expect(target).toBeInViewport();
+  await expect(page.locator('.ldp-post[data-post-number="1500"]')).toHaveCount(1);
+  await expect(page.locator('.ldp-tl-current-post')).toContainText('/ 2000');
+  const loadedMiddle = requests
+    .filter((item) => item.type === 'posts')
+    .flatMap((item) => item.ids)
+    .some((id) => id > postId(100) && id < postId(1400));
+  expect(loadedMiddle).toBe(false);
+});
+
+test('renders a multi-level reply below the exact parent chain', async ({ page }) => {
+  await bootReader(page, {
+    target: 11,
+    postOverrides: {
+      10: { reply_to_post_number: 9 },
+      11: { reply_to_post_number: 10 },
+    },
+  });
+  const parent = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"]');
+  const child = parent.locator(':scope > .ldp-children > .ldp-post-copy[data-post-number="10"]');
+  const grandchild = child.locator(':scope > .ldp-children > .ldp-post-copy[data-post-number="11"]');
+  await expect(child).toHaveCount(1);
+  await expect(grandchild).toHaveCount(1);
+  await expect(grandchild).toBeInViewport();
+  await expect(page.locator('.ldp-post[data-post-number="11"]')).toHaveCount(1);
+});
+
+test('keeps replies to the opening post in the root timeline', async ({ page }) => {
+  await bootReader(page, {
+    target: 12,
+    postOverrides: { 12: { reply_to_post_number: 1 } },
+  });
+  await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="12"]')).toHaveCount(1);
+  await expect(page.locator('.ldp-post[data-post-number="1"] > .ldp-children .ldp-post[data-post-number="12"]')).toHaveCount(0);
+});
+
+test('falls back to a standalone reply when its parent cannot be loaded', async ({ page }) => {
+  await bootReader(page, {
+    target: 50,
+    missingPostNumber: 49,
+    postOverrides: { 50: { reply_to_post_number: 49 } },
+  });
+  await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="50"]')).toHaveCount(1);
+  await expect(page.locator('.ldp-post[data-post-number="50"]')).toHaveCount(1);
 });
 
 test('retries after a shared 429 cooldown', async ({ page }) => {
@@ -521,7 +595,7 @@ test('keeps stream positions stable when a requested post is missing', async ({ 
 
 test('preserves interaction state after a virtual post remounts', async ({ page }) => {
   await bootReader(page, { target: 10 });
-  const postTen = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="10"]');
+  const postTen = page.locator('.ldp-post[data-post-number="10"]');
   await postTen.locator('.ldp-like').click();
   await page.locator('.ldp-body').evaluate((node) => {
     node.scrollTop = node.scrollHeight - node.clientHeight;
@@ -554,7 +628,7 @@ test('reloads the latest stream when a fresh-cache new-post notice is opened', a
   await page.click('.ldp-close');
   topicState.postCount = POST_COUNT + 1;
   await page.click('.raw-topic-link');
-  await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="100"]')).toBeVisible();
+  await expect(page.locator('.ldp-post[data-post-number="100"]')).toBeVisible();
   await page.locator('.ldp-new-posts').evaluate((button, postNumber) => {
     button.dataset.postNumber = String(postNumber);
     button.hidden = false;
@@ -586,7 +660,7 @@ test('reconciles a stale snapshot with a changed stream without losing navigatio
   });
   topicState.postCount = POST_COUNT + 1;
   await page.click('.raw-topic-link');
-  await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="100"]')).toBeVisible();
+  await expect(page.locator('.ldp-post[data-post-number="100"]')).toBeVisible();
   await expect(page.locator('.ldp-tl-current-post')).toContainText(`/ ${POST_COUNT + 1}`);
   await page.click('.ldp-tl-bottom-date');
   await expect(page.locator(`.ldp-virtual-window > .ldp-post[data-post-number="${POST_COUNT + 1}"]`)).toBeInViewport();
