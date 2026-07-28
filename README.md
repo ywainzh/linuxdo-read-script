@@ -40,6 +40,10 @@
 2. 打开 [Greasy Fork 脚本页](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC) 并点击安装。
 3. 刷新 `https://linux.do` 或 `https://idcflare.com` 任意页面即可生效。
 
+## 独立插件
+
+- [Linux DO 登录助手](./plugins/LinuxDO登录助手/)：在第三方网站自动选择 Linux DO 登录，并在 Linux DO Connect 页面自动授权。该插件是独立用户脚本，不会并入或改变便捷阅读器。
+
 ## 发布更新
 
 仓库内提供了一个 Greasy Fork 发布助手：[tools/greasyfork-update-helper.user.js](./tools/greasyfork-update-helper.user.js)。
