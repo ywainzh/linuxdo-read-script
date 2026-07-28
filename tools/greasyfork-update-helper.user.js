@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         LinuxDo Greasy Fork 发布助手
 // @namespace    https://github.com/ywainzh/linuxdo-read-script
-// @version      0.2.0
+// @version      0.3.0
 // @license      MIT
 // @description  在项目脚本的 Greasy Fork 页面一键从 GitHub 拉取并发布更新。
 // @author       ywainzh
 // @match        https://greasyfork.org/*/scripts/586863*
 // @match        https://greasyfork.org/*/scripts/588940*
+// @match        https://greasyfork.org/*/scripts/588943*
+// @match        https://greasyfork.org/*/users/1622808-ywainzh*
 // @match        https://greasyfork.org/*/script_versions/*
 // @match        https://greasyfork.org/*/scripts/*/versions/*
 // @connect      api.github.com
@@ -28,6 +30,11 @@
       id: '588940',
       name: 'Linux DO 登录助手',
       path: 'plugins/LinuxDO登录助手/linuxdo-auto-login.user.js',
+    }),
+    '588943': Object.freeze({
+      id: '588943',
+      name: 'LinuxDo Greasy Fork 发布助手',
+      path: 'tools/greasyfork-update-helper.user.js',
     }),
   });
 
@@ -134,20 +141,20 @@
     return { name, version };
   }
 
-  function setStatus(message = '', tone = 'info') {
-    const status = document.querySelector('#linuxdo-gf-update-status');
-    if (!status) return;
-    status.textContent = message;
-    status.dataset.tone = tone;
-    status.hidden = !message;
+  function setStatus(target, message = '', tone = 'info') {
+    document.querySelectorAll(`[data-linuxdo-gf-status="${target.id}"]`).forEach((status) => {
+      status.textContent = message;
+      status.dataset.tone = tone;
+      status.hidden = !message;
+    });
   }
 
-  function setBusy(busy, label = '拉取并发布') {
-    const button = document.querySelector('#linuxdo-gf-update-button');
-    if (!button) return;
-    button.disabled = busy;
-    button.setAttribute('aria-busy', String(busy));
-    button.textContent = label;
+  function setBusy(target, busy, label = '') {
+    document.querySelectorAll(`[data-linuxdo-gf-target="${target.id}"]`).forEach((button) => {
+      button.disabled = busy;
+      button.setAttribute('aria-busy', String(busy));
+      button.textContent = label || button.dataset.defaultLabel;
+    });
   }
 
   function clearPublishSession() {
@@ -178,8 +185,8 @@
 
   async function startUpdate(target) {
     try {
-      setStatus();
-      setBusy(true, '正在拉取...');
+      setStatus(target);
+      setBusy(target, true, '正在拉取...');
 
       if (!isLoggedIn()) {
         sessionStorage.setItem(STORE_PENDING_TARGET, target.id);
@@ -191,22 +198,24 @@
       const { code, sha } = await fetchLatestScript(target);
       const meta = validateCode(code, target);
       const shortSha = sha.slice(0, 7);
-      setBusy(false);
+      setBusy(target, false);
 
       const ok = window.confirm(
         `将从 GitHub ${shortSha} 拉取并公开发布 ${meta.name} v${meta.version} 到 Greasy Fork。\n\n` +
         '请确认本地修改已经推送到 GitHub，并且 @version 已递增。'
       );
       if (!ok) {
-        setStatus('已取消。');
+        setStatus(target, '已取消。');
         return;
       }
 
-      setBusy(true, '正在发布...');
+      setBusy(target, true, '正在发布...');
       submitPrefillForm(target, code, meta.version);
     } catch (error) {
-      setBusy(false);
-      setStatus(error.message || String(error), 'error');
+      setBusy(target, false);
+      const message = error.message || String(error);
+      setStatus(target, message, 'error');
+      if (!document.querySelector(`[data-linuxdo-gf-status="${target.id}"]`)) window.alert(message);
       console.error('[LinuxDo Greasy Fork 发布助手]', error);
     }
   }
@@ -248,17 +257,12 @@
     setTimeout(() => submitButton.click(), 800);
   }
 
-  function installControl() {
-    const target = currentTarget();
-    if (!isTargetScriptPage(target) || document.querySelector('#linuxdo-gf-update-control')) return;
-
-    const installArea = document.querySelector('#install-area');
-    if (!installArea) return;
-
+  function ensureStyles() {
+    if (document.querySelector('#linuxdo-gf-update-style')) return;
     const style = document.createElement('style');
     style.id = 'linuxdo-gf-update-style';
     style.textContent = `
-      #linuxdo-gf-update-control {
+      .linuxdo-gf-update-control {
         display: inline-flex;
         align-items: center;
         gap: 8px;
@@ -266,7 +270,7 @@
         vertical-align: top;
         font: 14px/1.35 Arial, sans-serif;
       }
-      #linuxdo-gf-update-button {
+      .linuxdo-gf-update-button {
         min-width: 126px;
         min-height: 38px;
         padding: 8px 16px;
@@ -279,59 +283,115 @@
         cursor: pointer;
         transition: background-color 140ms ease, box-shadow 140ms ease;
       }
-      #linuxdo-gf-update-button:hover:not(:disabled) {
+      .linuxdo-gf-update-button:hover:not(:disabled),
+      .linuxdo-gf-card-publish:hover:not(:disabled) {
         background: #0f5877;
       }
-      #linuxdo-gf-update-button:focus-visible {
+      .linuxdo-gf-update-button:focus-visible,
+      .linuxdo-gf-card-publish:focus-visible {
         outline: 2px solid #166b8f;
         outline-offset: 2px;
       }
-      #linuxdo-gf-update-button:disabled {
+      .linuxdo-gf-update-button:disabled,
+      .linuxdo-gf-card-publish:disabled {
         cursor: wait;
         opacity: .68;
       }
-      #linuxdo-gf-update-status {
+      .linuxdo-gf-update-status {
         max-width: min(340px, calc(100vw - 32px));
         color: #4b5563;
         font-size: 12px;
         overflow-wrap: anywhere;
       }
-      #linuxdo-gf-update-status[data-tone="error"] {
+      .linuxdo-gf-update-status[data-tone="error"] {
         color: #b42318;
       }
+      .linuxdo-gf-card-publish {
+        min-width: 72px;
+        height: 26px;
+        margin-left: 9px;
+        padding: 0 11px;
+        border: 0;
+        border-radius: 4px;
+        color: #fff;
+        background: #166b8f;
+        font: 700 12px/26px Arial, sans-serif;
+        vertical-align: 2px;
+        cursor: pointer;
+        transition: background-color 140ms ease;
+      }
       @media (max-width: 560px) {
-        #linuxdo-gf-update-control {
+        .linuxdo-gf-update-control {
           margin-top: 8px;
           margin-left: 0;
         }
       }
       @media (prefers-reduced-motion: reduce) {
-        #linuxdo-gf-update-button {
+        .linuxdo-gf-update-button,
+        .linuxdo-gf-card-publish {
           transition: none;
         }
       }
     `;
     document.head.appendChild(style);
+  }
+
+  function installDetailControl() {
+    const target = currentTarget();
+    if (!isTargetScriptPage(target) || document.querySelector('.linuxdo-gf-update-control')) return;
+
+    const installArea = document.querySelector('#install-area');
+    if (!installArea) return;
+    ensureStyles();
 
     const control = document.createElement('span');
-    control.id = 'linuxdo-gf-update-control';
+    control.className = 'linuxdo-gf-update-control';
     control.innerHTML = `
-      <button type="button" id="linuxdo-gf-update-button">拉取并发布</button>
-      <span id="linuxdo-gf-update-status" role="status" aria-live="polite" hidden></span>
+      <button type="button" class="linuxdo-gf-update-button" data-linuxdo-gf-target="${target.id}" data-default-label="拉取并发布">拉取并发布</button>
+      <span class="linuxdo-gf-update-status" data-linuxdo-gf-status="${target.id}" role="status" aria-live="polite" hidden></span>
     `;
     installArea.appendChild(control);
-    control.querySelector('#linuxdo-gf-update-button').addEventListener('click', () => startUpdate(target));
+    control.querySelector('.linuxdo-gf-update-button').addEventListener('click', () => startUpdate(target));
+  }
+
+  function isProfilePage() {
+    return /\/users\/1622808-ywainzh(?:\/|$)/.test(location.pathname);
+  }
+
+  function installProfileControls() {
+    if (!isProfilePage()) return;
+    ensureStyles();
+
+    document.querySelectorAll('article .script-link').forEach((link) => {
+      const targetId = link.getAttribute('href')?.match(/\/scripts\/(\d+)(?:-|\/|$)/)?.[1];
+      const target = TARGETS[targetId];
+      const heading = link.closest('h2');
+      if (!target || !heading || heading.querySelector(`[data-linuxdo-gf-target="${target.id}"]`)) return;
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'linuxdo-gf-card-publish';
+      button.dataset.linuxdoGfTarget = target.id;
+      button.dataset.defaultLabel = '一键发布';
+      button.textContent = '一键发布';
+      button.addEventListener('click', () => startUpdate(target));
+
+      const badge = heading.querySelector('.badge-js');
+      if (badge) badge.insertAdjacentElement('afterend', button);
+      else link.insertAdjacentElement('afterend', button);
+    });
   }
 
   function resumeAfterLogin() {
-    const target = currentTarget();
     const pendingTargetId = sessionStorage.getItem(STORE_PENDING_TARGET);
-    if (!isTargetScriptPage(target) || pendingTargetId !== target.id) return;
+    const target = TARGETS[pendingTargetId];
+    if (!target || (!isTargetScriptPage(target) && !isProfilePage())) return;
     sessionStorage.removeItem(STORE_PENDING_TARGET);
     setTimeout(() => startUpdate(target), 500);
   }
 
-  installControl();
+  installDetailControl();
+  installProfileControls();
   resumeAfterLogin();
   autoPublishIfReady();
 })();

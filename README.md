@@ -47,12 +47,12 @@
 ## 发布更新
 
 仓库内提供了一个 Greasy Fork 发布助手：[tools/greasyfork-update-helper.user.js](./tools/greasyfork-update-helper.user.js)。
-先安装 [Greasy Fork 发布助手](https://raw.githubusercontent.com/ywainzh/linuxdo-read-script/main/tools/greasyfork-update-helper.user.js)，后续更新流程：
+通过 [Greasy Fork](https://greasyfork.org/zh-CN/scripts/588943-linuxdo-greasy-fork-%E5%8F%91%E5%B8%83%E5%8A%A9%E6%89%8B) 或 [GitHub Raw](https://raw.githubusercontent.com/ywainzh/linuxdo-read-script/main/tools/greasyfork-update-helper.user.js) 安装后，按以下流程更新：
 
-1. 修改 `LinuxDo 便捷脚本.user.js` 或 `plugins/LinuxDO登录助手/linuxdo-auto-login.user.js`，并递增对应脚本头里的 `@version`。
+1. 修改目标用户脚本，并递增对应脚本头里的 `@version`。
 2. 提交并推送到 GitHub `main` 分支。
-3. 打开对应的 Greasy Fork 页面：[LinuxDo 便捷脚本](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC) 或 [Linux DO 登录助手](https://greasyfork.org/zh-CN/scripts/588940-linux-do-%E7%99%BB%E5%BD%95%E5%8A%A9%E6%89%8B)。
-4. 点击安装版本旁边的“拉取并发布”，确认版本信息后，发布助手会自动填写并提交更新。
+3. 打开 [Greasy Fork 账号页](https://greasyfork.org/zh-CN/users/1622808-ywainzh)，点击目标脚本标题旁的“一键发布”；也可以在脚本详情页点击安装版本旁的“拉取并发布”。
+4. 发布助手支持 [LinuxDo 便捷脚本](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)、[Linux DO 登录助手](https://greasyfork.org/zh-CN/scripts/588940-linux-do-%E7%99%BB%E5%BD%95%E5%8A%A9%E6%89%8B) 和 [发布助手自身](https://greasyfork.org/zh-CN/scripts/588943-linuxdo-greasy-fork-%E5%8F%91%E5%B8%83%E5%8A%A9%E6%89%8B)。
 5. 如 Greasy Fork 要求登录，按页面提示完成即可，发布助手会继续处理后续步骤。
 
 ## 使用说明
