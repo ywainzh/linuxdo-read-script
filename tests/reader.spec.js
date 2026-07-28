@@ -845,6 +845,35 @@ test('generates desktop and dark-mode inspection screenshots', async ({ page }, 
   await page.screenshot({ path: testInfo.outputPath('reader-dark.png') });
 });
 
+test('keeps the timeline visible beside an extra-wide code block', async ({ page }) => {
+  await bootReader(page, { target: 12 });
+  await page.locator('.ldp-post[data-post-number="12"] .ldp-content').evaluate((content) => {
+    const pre = document.createElement('pre');
+    pre.textContent = `docker compose ${'LONG_UNBROKEN_VALUE_'.repeat(80)}`;
+    content.prepend(pre);
+  });
+
+  const layout = await page.evaluate(() => {
+    const modal = document.querySelector('.ldp-v2 .ldp-modal').getBoundingClientRect();
+    const shell = document.querySelector('.ldp-v2 .ldp-shell').getBoundingClientRect();
+    const body = document.querySelector('.ldp-v2 .ldp-body').getBoundingClientRect();
+    const timeline = document.querySelector('.ldp-v2 .ldp-timeline').getBoundingClientRect();
+    return {
+      modalRight: modal.right,
+      shellRight: shell.right,
+      bodyRight: body.right,
+      timelineLeft: timeline.left,
+      timelineRight: timeline.right,
+      timelineWidth: timeline.width,
+    };
+  });
+
+  expect(layout.shellRight).toBeLessThanOrEqual(layout.modalRight + 1);
+  expect(layout.timelineRight).toBeLessThanOrEqual(layout.modalRight + 1);
+  expect(layout.timelineLeft).toBeGreaterThanOrEqual(layout.bodyRight - 1);
+  expect(layout.timelineWidth).toBeGreaterThan(70);
+});
+
 test.describe('mobile layout', () => {
   test.use({ viewport: { width: 390, height: 844 } });
   test('keeps the reader and toolbar inside the viewport', async ({ page }, testInfo) => {

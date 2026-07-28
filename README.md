@@ -2,7 +2,7 @@
 
 > 在 LINUX DO 与 IDC Flare 列表页点击标题即可弹窗预览整帖，支持楼中楼、互动、原图灯箱、已读进度与 Obsidian 首帖快照——无需离开列表页，也无需反复返回。
 
-![version](https://img.shields.io/badge/version-2.0.6-blue)
+![version](https://img.shields.io/badge/version-2.0.7-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 [![Greasy Fork](https://img.shields.io/badge/Greasy%20Fork-安装脚本-red)](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)

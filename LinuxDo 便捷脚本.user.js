@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      2.0.6
+// @version      2.0.7
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 高性能浮窗阅读帖子，支持虚拟楼层、历史收藏、互动、用户卡片和 Obsidian 快照。
 // @author       Fashion
@@ -151,7 +151,7 @@
     @media (prefers-reduced-motion:reduce){
       .ldp-obsidian-save,.ldp-obsidian-copy,.ldp-obsidian-settings{transition:none;}
     }
-    .ldp-shell{flex:1;min-height:0;position:relative;display:flex;}
+    .ldp-shell{flex:1;min-width:0;min-height:0;position:relative;display:flex;overflow:hidden;}
     .ldp-body{flex:1;min-width:0;min-height:0;position:relative;
       padding:8px 20px 20px;overflow-y:auto;overscroll-behavior:contain;
       scrollbar-width:none;overflow-anchor:none;}
@@ -502,8 +502,8 @@
     .ldp-v2 .ldp-settings-host{display:inline-flex;flex:none;}
     .ldp-v2 .ldp-close{font-size:0;}
     .ldp-v2 .ldp-shell{background:var(--secondary,#fff);}
-    .ldp-v2 .ldp-shell-host{display:flex;flex:1;min-height:0;}
-    .ldp-v2 .ldp-shell-host > .ldp-shell{flex:1;min-height:0;}
+    .ldp-v2 .ldp-shell-host{display:flex;flex:1;min-width:0;min-height:0;overflow:hidden;}
+    .ldp-v2 .ldp-shell-host > .ldp-shell{flex:1;width:100%;min-width:0;min-height:0;}
     .ldp-v2 .ldp-footer{display:flex;flex:none;align-items:center;justify-content:space-around;padding:10px 22px;
       border-top:1px solid var(--primary-low,#e2e6e4);background:var(--secondary,#fff);}
     .ldp-v2 .ldp-footer[hidden]{display:none;}
