@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux DO 登录助手
 // @namespace    https://linux.do/
-// @version      1.3.0
+// @version      1.3.1
 // @description  自动优先使用 Linux DO 登录，并在 Linux DO Connect 页面自动执行授权。
 // @author       Codex
 // @license      MIT
