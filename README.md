@@ -52,8 +52,9 @@
 1. 修改目标用户脚本，并递增对应脚本头里的 `@version`。
 2. 提交并推送到 GitHub `main` 分支。
 3. 打开 [Greasy Fork 账号页](https://greasyfork.org/zh-CN/users/1622808-ywainzh)，点击目标脚本标题旁的“一键发布”；也可以在脚本详情页点击安装版本旁的“拉取并发布”。
-4. 发布助手支持 [LinuxDo 便捷脚本](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)、[Linux DO 登录助手](https://greasyfork.org/zh-CN/scripts/588940-linux-do-%E7%99%BB%E5%BD%95%E5%8A%A9%E6%89%8B) 和 [发布助手自身](https://greasyfork.org/zh-CN/scripts/588943-linuxdo-greasy-fork-%E5%8F%91%E5%B8%83%E5%8A%A9%E6%89%8B)。
-5. 如 Greasy Fork 要求登录，按页面提示完成即可，发布助手会继续处理后续步骤。
+4. 发布助手会比较 GitHub 和 Greasy Fork 版本；发现新版本时直接发布，没有新版本时仅显示提示。
+5. 发布助手支持 [LinuxDo 便捷脚本](https://greasyfork.org/zh-CN/scripts/586863-linuxdo-%E4%BE%BF%E6%8D%B7%E8%84%9A%E6%9C%AC)、[Linux DO 登录助手](https://greasyfork.org/zh-CN/scripts/588940-linux-do-%E7%99%BB%E5%BD%95%E5%8A%A9%E6%89%8B) 和 [发布助手自身](https://greasyfork.org/zh-CN/scripts/588943-linuxdo-greasy-fork-%E5%8F%91%E5%B8%83%E5%8A%A9%E6%89%8B)。
+6. 如 Greasy Fork 要求登录，按页面提示完成即可，发布助手会继续处理后续步骤。
 
 ## 使用说明
 

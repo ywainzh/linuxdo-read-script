@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo Greasy Fork 发布助手
 // @namespace    https://github.com/ywainzh/linuxdo-read-script
-// @version      0.3.0
+// @version      0.3.1
 // @license      MIT
 // @description  在项目脚本的 Greasy Fork 页面一键从 GitHub 拉取并发布更新。
 // @author       ywainzh
@@ -126,6 +126,67 @@
     return { code, sha };
   }
 
+  async function fetchPublishedVersion(target) {
+    if (targetIdFromPath() === target.id) {
+      const localVersion = document.querySelector('#install-area .install-link[data-script-version]')?.dataset.scriptVersion;
+      if (localVersion) return localVersion.trim();
+    }
+
+    const response = await fetch(`${location.origin}${localePrefix()}/scripts/${target.id}?t=${Date.now()}`, {
+      cache: 'no-store',
+      credentials: 'same-origin',
+    });
+    if (!response.ok) throw new Error(`Greasy Fork 返回 HTTP ${response.status}`);
+    const html = await response.text();
+    const page = new DOMParser().parseFromString(html, 'text/html');
+    const version = page.querySelector('#install-area .install-link[data-script-version]')?.dataset.scriptVersion;
+    if (!version) throw new Error('未能读取 Greasy Fork 当前发布版本。');
+    return version.trim();
+  }
+
+  function parseVersion(version) {
+    const match = String(version || '').trim().match(/^v?(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?$/);
+    if (!match) return null;
+    return {
+      core: match[1].split('.').map(Number),
+      prerelease: match[2] ? match[2].split('.') : [],
+    };
+  }
+
+  function compareVersions(left, right) {
+    const a = parseVersion(left);
+    const b = parseVersion(right);
+    if (!a || !b) {
+      if (String(left).trim() === String(right).trim()) return 0;
+      throw new Error(`无法比较版本：GitHub ${left || '未知'} / Greasy Fork ${right || '未知'}`);
+    }
+
+    const coreLength = Math.max(a.core.length, b.core.length);
+    for (let index = 0; index < coreLength; index += 1) {
+      const difference = (a.core[index] || 0) - (b.core[index] || 0);
+      if (difference) return difference > 0 ? 1 : -1;
+    }
+
+    if (!a.prerelease.length && !b.prerelease.length) return 0;
+    if (!a.prerelease.length) return 1;
+    if (!b.prerelease.length) return -1;
+    const prereleaseLength = Math.max(a.prerelease.length, b.prerelease.length);
+    for (let index = 0; index < prereleaseLength; index += 1) {
+      const aPart = a.prerelease[index];
+      const bPart = b.prerelease[index];
+      if (aPart === undefined) return -1;
+      if (bPart === undefined) return 1;
+      if (aPart === bPart) continue;
+      const aNumber = /^\d+$/.test(aPart) ? Number(aPart) : null;
+      const bNumber = /^\d+$/.test(bPart) ? Number(bPart) : null;
+      if (aNumber !== null && bNumber !== null) return aNumber > bNumber ? 1 : -1;
+      if (aNumber !== null) return -1;
+      if (bNumber !== null) return 1;
+      return aPart > bPart ? 1 : -1;
+    }
+    return 0;
+  }
+
   function validateCode(code, target) {
     if (!code.includes('// ==UserScript==') || !code.includes('// ==/UserScript==')) {
       throw new Error('GitHub 返回的内容不是用户脚本。');
@@ -186,7 +247,7 @@
   async function startUpdate(target) {
     try {
       setStatus(target);
-      setBusy(target, true, '正在拉取...');
+      setBusy(target, true, '正在检查...');
 
       if (!isLoggedIn()) {
         sessionStorage.setItem(STORE_PENDING_TARGET, target.id);
@@ -195,17 +256,16 @@
         return;
       }
 
-      const { code, sha } = await fetchLatestScript(target);
+      const [{ code }, publishedVersion] = await Promise.all([
+        fetchLatestScript(target),
+        fetchPublishedVersion(target),
+      ]);
       const meta = validateCode(code, target);
-      const shortSha = sha.slice(0, 7);
-      setBusy(target, false);
-
-      const ok = window.confirm(
-        `将从 GitHub ${shortSha} 拉取并公开发布 ${meta.name} v${meta.version} 到 Greasy Fork。\n\n` +
-        '请确认本地修改已经推送到 GitHub，并且 @version 已递增。'
-      );
-      if (!ok) {
-        setStatus(target, '已取消。');
+      if (compareVersions(meta.version, publishedVersion) <= 0) {
+        setBusy(target, false);
+        window.alert(
+          `没有检测到新的版本需要发布。\n\nGitHub：v${meta.version}\nGreasy Fork：v${publishedVersion}`
+        );
         return;
       }
 
