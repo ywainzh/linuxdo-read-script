@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      2.0.10
+// @version      2.0.11
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 高性能浮窗阅读帖子，支持虚拟楼层、历史收藏、互动、用户卡片和 Obsidian 快照。
 // @author       Fashion
@@ -410,7 +410,7 @@
     .ldp-lb-x:focus-visible{outline:3px solid #fff;outline-offset:2px;}
 
     /* 原帖式直属回复折叠 */
-    .ldp-reply-toggle{margin-left:auto;padding:5px 8px;font-size:13px;line-height:1.2;
+    .ldp-reply-toggle{margin-left:6px;padding:4px 7px;font-size:15px;line-height:1.2;
       color:var(--primary-medium,#6f7772);font-weight:600;opacity:.88;border-radius:6px;gap:8px;}
     .ldp-reply-toggle::after{content:"";width:6px;height:6px;flex:none;
       border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
@@ -2909,8 +2909,6 @@
         <button class="ldp-btn ldp-replybtn" title="回复">
             <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.reply}</svg>
         </button>
-        ${directReplyCount ? `<button type="button" class="ldp-btn ldp-reply-toggle"
-          aria-expanded="false" aria-label="此楼层有 ${directReplyCount} 条直属回复">${directReplyCount} 个回复</button>` : ''}
         ${REACTIONS_AVAILABLE !== false && (validReactions.length || reactionCount) ? `<button class="ldp-btn ldp-reaction-btn ${currentReaction ? 'reacted' : ''}"
           data-current-reaction="${escAttr(currentReaction)}" data-valid-reactions="${escAttr(validReactions.join(','))}"
           title="添加回应" aria-label="添加回应">${currentReaction ? reactionLabel(currentReaction) : '☺'}${reactionCount ? `<span class="ldp-reaction-count">${reactionCount}</span>` : ''}</button>` : ''}
@@ -2921,6 +2919,8 @@
         <button class="ldp-btn ldp-boost-btn" ${canBoost ? '' : 'disabled'} title="Boost">
           <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.boost}</svg>
         </button>
+        ${directReplyCount ? `<button type="button" class="ldp-btn ldp-reply-toggle"
+          aria-expanded="false" aria-label="此楼层有 ${directReplyCount} 条直属回复">${directReplyCount} 个回复</button>` : ''}
       </div>
       <div class="ldp-children"></div>
     `;
@@ -3102,8 +3102,8 @@
       button = document.createElement('button');
       button.type = 'button';
       button.className = 'ldp-btn ldp-reply-toggle';
-      const replyButton = parentNode.querySelector(':scope > .ldp-actions .ldp-replybtn');
-      if (replyButton) replyButton.after(button);
+      const actions = parentNode.querySelector(':scope > .ldp-actions');
+      if (actions) actions.appendChild(button);
     }
     if (!button) return;
     button.hidden = count <= 0 && !(state && state.error);
