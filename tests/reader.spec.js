@@ -247,6 +247,37 @@ test('opens immediately near a distant target without requesting middle ranges',
   expect(requestedIds.some((id) => id > postId(100) && id < postId(1900))).toBeFalsy();
 });
 
+test('does not leave a phantom bottom spacer after the last-floor projection settles', async ({ page }) => {
+  const postCount = 167;
+  const postOverrides = Object.fromEntries(Array.from({ length: postCount - 3 }, (_, index) => {
+    const postNumber = index + 3;
+    return [postNumber, postNumber < postCount && postNumber % 2 === 0
+      ? { reply_to_post_number: postNumber - 1 }
+      : { reply_to_post_number: null }];
+  }));
+  await bootReader(page, {
+    target: postCount,
+    postOverrides,
+    skipTargetAssertion: true,
+    topicState: { postCount },
+  });
+  await expect(page.locator(`.ldp-post[data-post-number="${postCount}"]`)).toBeInViewport();
+  await page.waitForTimeout(500);
+
+  const metrics = await page.locator('.ldp-body').evaluate((body) => {
+    const bottomSpacer = body.querySelector('.ldp-virtual-spacer-bottom');
+    const mounted = Array.from(body.querySelector('.ldp-virtual-window').children);
+    return {
+      bottomHeight: bottomSpacer.getBoundingClientRect().height,
+      lastPostNumber: Number(mounted[mounted.length - 1]?.dataset.postNumber) || 0,
+      remaining: body.scrollHeight - body.clientHeight - body.scrollTop,
+    };
+  });
+  expect(metrics.lastPostNumber).toBe(postCount);
+  expect(metrics.bottomHeight).toBeLessThanOrEqual(1);
+  expect(metrics.remaining).toBeLessThanOrEqual(2);
+});
+
 test('returns from a distant floor to the real top of the reader', async ({ page }) => {
   await bootReader(page);
   await page.locator('.ldp-tl-top-date').click();
@@ -377,6 +408,7 @@ test('reuses overlapping post and image nodes when the virtual window advances',
     return roots.map((node) => Number(node.dataset.postNumber));
   });
 
+  await page.locator('.ldp-body').dispatchEvent('wheel', { deltaY: 0 });
   await page.locator('.ldp-virtual-window > .ldp-post[data-post-number="522"]')
     .evaluate((node) => node.scrollIntoView({ block: 'start' }));
   await expect.poll(async () => page.locator('.ldp-virtual-window > .ldp-post').evaluateAll((nodes, first) =>

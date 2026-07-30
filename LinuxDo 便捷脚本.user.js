@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      2.0.7
+// @version      2.0.8
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 高性能浮窗阅读帖子，支持虚拟楼层、历史收藏、互动、用户卡片和 Obsidian 快照。
 // @author       Fashion
@@ -4468,6 +4468,7 @@
     let prefix = [0];
     let mountedStart = -1;
     let mountedEnd = -1;
+    let logicalRevision = 0;
     let scrollRaf = 0;
     let resizeRaf = 0;
     let interactionRevision = 0;
@@ -4498,6 +4499,7 @@
     let pendingProjectionReconcile = false;
     let projectionReconcileQueued = false;
     let projectionReconcileRunning = false;
+    let explicitSeekDepth = 0;
     const pendingResizeHeights = new Map();
     const resizeObserver = new ResizeObserver((entries) => {
       if (destroyed || committing || !entries.length) return;
@@ -4820,6 +4822,9 @@
         }
         node.dataset.streamPostId = String(id);
         node.dataset.windowEpoch = String(ctx.windowEpoch + 1);
+        if (Number(ctx.highlightPostId) === Number(post.id) && Date.now() < Number(ctx.highlightUntil || 0)) {
+          node.classList.add('ldp-flash');
+        }
         retained.add(node);
         fragment.appendChild(node);
       });
@@ -4859,6 +4864,19 @@
         }
         await Promise.all(groups);
         if (destroyed) return false;
+        if (request.interactionRevision !== interactionRevision) return false;
+        let commitStart = request.start;
+        let commitEnd = request.end;
+        if (request.logicalRevision !== logicalRevision) {
+          const currentPositions = request.source
+            .map((id) => positionByPostId.get(Number(id)))
+            .filter((position) => position !== undefined);
+          const contiguous = currentPositions.length > 0
+            && currentPositions.every((position, index) => position === currentPositions[0] + index);
+          if (!contiguous) return false;
+          commitStart = currentPositions[0];
+          commitEnd = currentPositions[currentPositions.length - 1] + 1;
+        }
         if (!request.forceCommit && request.sequence < latestMountSequence) return false;
         const entries = request.source.map((id) => ({ id, post: loader.getPostById(id) }));
         const anchor = request.anchorOverride || manualScrollAnchor
@@ -4869,8 +4887,8 @@
           resizeRaf = 0;
           pendingResizeHeights.clear();
           pendingResizeAnchor = null;
-          mountedStart = request.start;
-          mountedEnd = request.end;
+          mountedStart = commitStart;
+          mountedEnd = commitEnd;
           renderWindow(entries);
           measureWindowHeights();
           syncSpacers();
@@ -4901,6 +4919,8 @@
       if (!force && safeStart === mountedStart && safeEnd === mountedEnd) return Promise.resolve(true);
       const source = logicalIds.slice(safeStart, safeEnd);
       const same = (request) => request && request.start === safeStart && request.end === safeEnd
+        && request.logicalRevision === logicalRevision
+        && request.interactionRevision === interactionRevision
         && request.source.length === source.length && request.source.every((id, index) => Number(id) === Number(source[index]));
       return new Promise((resolve, reject) => {
         const forceCommit = !!(options && options.forceCommit);
@@ -4922,6 +4942,7 @@
         }
         const request = {
           start: safeStart, end: safeEnd, source,
+          logicalRevision, interactionRevision,
           priority: priority || 'visible', sequence: ++mountSequence,
           preserveAnchor: !options || options.preserveAnchor !== false,
           anchorOverride: options && options.anchorOverride,
@@ -4964,7 +4985,7 @@
 
     function requestProjectionReconcile() {
       pendingProjectionReconcile = true;
-      if (destroyed || userScrollActive || projectionReconcileQueued || projectionReconcileRunning) return;
+      if (destroyed || userScrollActive || explicitSeekDepth > 0 || projectionReconcileQueued || projectionReconcileRunning) return;
       projectionReconcileQueued = true;
       queueMicrotask(async () => {
         projectionReconcileQueued = false;
@@ -5007,7 +5028,7 @@
       const nextScrollTop = ctx.scrollRoot.scrollTop;
       const viewport = Math.max(1, ctx.scrollRoot.clientHeight);
       const syntheticScroll = !!(event && event.isTrusted === false);
-      if (syntheticScroll && !seekingScroll && !committing && !manualScrollActive) beginManualScroll();
+      if (syntheticScroll && !seekingScroll) beginManualScroll();
       const discontinuous = !committing && !seekingScroll && !pinnedAnchor
         && Math.abs(nextScrollTop - lastObservedScrollTop) > viewport * DISCONTINUOUS_SCROLL_SCREENS;
       const treatAsManual = manualScrollActive
@@ -5098,7 +5119,7 @@
       scheduleManualScrollRelease();
     }
 
-    async function seekResolvedTarget(target, options) {
+    async function performSeekResolvedTarget(target, options) {
       preferredFocusPostId = Number(target && target.targetPostId) || Number(target && target.rootPostId) || 0;
       preferredViewportAnchor = null;
       preferredProtectedUntil = performance.now() + SEEK_MAX_MS;
@@ -5116,21 +5137,36 @@
         position = fallbackPost ? positionByPostId.get(Number(fallbackPost.id)) : undefined;
       }
       if (position === undefined) position = Math.max(0, Math.min(logicalIds.length - 1, Number(target && target.index) || 0));
-      const targetWindow = windowAroundPosition(position);
+      let targetWindow = windowAroundPosition(position);
       const local = position >= mountedStart && position < mountedEnd;
-      await mount(targetWindow.start, targetWindow.end, 'target', {
+      let mounted = await mount(targetWindow.start, targetWindow.end, 'target', {
         preserveAnchor: false, forceCommit: true,
       });
+      for (let attempt = 0; !mounted && !destroyed && attempt < MAX_RENDERED_POSTS; attempt++) {
+        await Promise.resolve();
+        position = positionByPostId.get(rootPostId);
+        if (position === undefined) position = Math.max(0, Math.min(logicalIds.length - 1, Number(target && target.index) || 0));
+        targetWindow = windowAroundPosition(position);
+        mounted = await mount(targetWindow.start, targetWindow.end, 'target', {
+          force: true, preserveAnchor: false, forceCommit: true,
+        });
+      }
+      if (!mounted || destroyed) return false;
       position = positionByPostId.get(rootPostId);
       if (position === undefined) position = 0;
       const behavior = local && options && options.smooth ? 'smooth' : 'auto';
       const top = contentTop() + prefix[position];
       const viewportOffset = ctx.scrollRoot.clientHeight * 0.3;
+      let node = ctx.nodeMap.get(Number(target && target.postNumber));
       clearPinnedAnchor();
       pinnedAnchor = { position, postId: logicalIds[position], viewportOffset, pinned: true };
       seekingScroll = true;
       try {
-        ctx.scrollRoot.scrollTo({ top: Math.max(0, top - viewportOffset), behavior });
+        if (node && (!target || !Array.isArray(target.path) || target.path.length <= 1)) {
+          node.scrollIntoView({ block: 'center', behavior });
+        } else {
+          ctx.scrollRoot.scrollTo({ top: Math.max(0, top - viewportOffset), behavior });
+        }
         if (behavior === 'smooth') await waitForScrollEnd(ctx.scrollRoot);
         else await new Promise((resolve) => requestAnimationFrame(resolve));
         lastObservedScrollTop = ctx.scrollRoot.scrollTop;
@@ -5140,7 +5176,6 @@
       viewportWasAtBottom = isAtBottom();
       stableViewportAnchor = captureViewportAnchor();
       notePinnedActivity();
-      let node = ctx.nodeMap.get(Number(target && target.postNumber));
       if (target && Array.isArray(target.path) && target.path.length > 1 && ctx.repliesIO) {
         node = ctx.repliesIO.revealPath(target.path) || node;
         await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -5186,6 +5221,16 @@
         }, 1710);
       }
       return true;
+    }
+
+    async function seekResolvedTarget(target, options) {
+      explicitSeekDepth += 1;
+      try {
+        return await performSeekResolvedTarget(target, options);
+      } finally {
+        explicitSeekDepth = Math.max(0, explicitSeekDepth - 1);
+        if (!destroyed && explicitSeekDepth === 0 && pendingProjectionReconcile) requestProjectionReconcile();
+      }
     }
 
     async function seekToIndex(streamIndex, desiredPostNumber, options) {
@@ -5241,20 +5286,30 @@
 
     async function reconcileStream(nextIds, options) {
       if (destroyed) return;
+      const reconciliationInteractionRevision = interactionRevision;
       const preferredNode = preferredFocusPostId
         ? windowEl.querySelector(`.ldp-post[data-post-id="${Number(preferredFocusPostId)}"]`) : null;
       const anchor = logicalIds.length
         ? (pinnedAnchor || manualScrollAnchor || preferredViewportAnchor || captureNodeViewportAnchor(preferredNode)
           || stableViewportAnchor || captureViewportAnchor()) : null;
-      logicalIds = (nextIds || displayStreamIds()).filter((id) => !onlyOp || (loader.getPostById(id) || {}).username === ctx.op);
-      heights = logicalIds.map((id) => heightByPostId.get(Number(id)) || DEFAULT_HEIGHT);
-      rebuildPrefix();
-      mountedStart = mountedEnd = -1;
+      const nextLogicalIds = (nextIds || displayStreamIds())
+        .filter((id) => !onlyOp || (loader.getPostById(id) || {}).username === ctx.op);
+      const streamChanged = nextLogicalIds.length !== logicalIds.length
+        || nextLogicalIds.some((id, index) => Number(id) !== Number(logicalIds[index]));
+      if (streamChanged) {
+        logicalIds = nextLogicalIds;
+        heights = logicalIds.map((id) => heightByPostId.get(Number(id)) || DEFAULT_HEIGHT);
+        logicalRevision += 1;
+        rebuildPrefix();
+        mountedStart = mountedEnd = -1;
+      }
+      const revision = logicalRevision;
       if (!logicalIds.length) {
         withViewportAnchor(() => clearWindow());
         syncSpacers();
         return;
       }
+      if (!streamChanged && mountedStart >= 0 && mountedEnd > mountedStart) return;
       let position = anchor && positionByPostId.get(Number(anchor.postId));
       if (position === undefined && anchor && anchor.postNumber) {
         let distance = Infinity;
@@ -5266,8 +5321,16 @@
       }
       if (position === undefined) position = Math.max(0, Math.min(logicalIds.length - 1, Number(anchor && anchor.position) || 0));
       const desired = windowAroundPosition(position);
-      await mount(desired.start, desired.end, 'visible', {
+      const committed = await mount(desired.start, desired.end, 'visible', {
         force: true, forceCommit: !!(options && options.forceCommit),
+        preserveAnchor: true, anchorOverride: anchor,
+      });
+      if (committed || destroyed || revision !== logicalRevision
+        || reconciliationInteractionRevision !== interactionRevision) return;
+      const retryPosition = positionByPostId.get(Number(anchor && anchor.postId));
+      const retryWindow = windowAroundPosition(retryPosition === undefined ? position : retryPosition);
+      await mount(retryWindow.start, retryWindow.end, 'visible', {
+        force: true, forceCommit: true,
         preserveAnchor: true, anchorOverride: anchor,
       });
     }
