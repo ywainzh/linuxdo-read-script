@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GreasyFork 美化增强版 | GitHub Redesign
 // @namespace    https://github.com/ywainzh/linuxdo-read-script
-// @version      1.2.5
+// @version      1.2.6
 // @description  将 Greasy Fork 全量美化为 GitHub 风格，并修复页面跳转时原生界面闪现的问题。
 // @author       咸鱼真人（原作），ywainzh（修复维护）
 // @match        https://greasyfork.org/*
@@ -123,8 +123,9 @@ const beginGreasyForkLeaving = () => {
     document.addEventListener('click', (event) => {
         const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
         if (!link || !isPlainSameOriginLink(event, link)) return;
+        beginGreasyForkLeaving();
         queueMicrotask(() => {
-            if (!event.defaultPrevented) beginGreasyForkLeaving();
+            if (event.defaultPrevented) clearGreasyForkLeaving();
         });
     }, true);
 
@@ -133,8 +134,9 @@ const beginGreasyForkLeaving = () => {
         if (!(form instanceof HTMLFormElement) || form.target === '_blank') return;
         const action = new URL(form.action || location.href, location.href);
         if (action.origin !== location.origin) return;
+        beginGreasyForkLeaving();
         queueMicrotask(() => {
-            if (!event.defaultPrevented) beginGreasyForkLeaving();
+            if (event.defaultPrevented) clearGreasyForkLeaving();
         });
     }, true);
 

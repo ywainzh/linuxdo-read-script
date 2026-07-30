@@ -15,7 +15,7 @@ const targets = {
   '586863': { name: 'LinuxDo 便捷脚本', path: 'LinuxDo 便捷脚本.user.js', github: '2.0.12', published: '2.0.12' },
   '588940': { name: 'Linux DO 登录助手', path: 'plugins/LinuxDO登录助手/linuxdo-auto-login.user.js', github: '1.3.0', published: '1.3.0' },
   '588943': { name: 'LinuxDo Greasy Fork 发布助手', path: 'tools/greasyfork-update-helper.user.js', github: '0.3.3', published: '0.3.2' },
-  '589199': { name: 'GreasyFork 美化增强版 | GitHub Redesign', path: 'plugins/GreasyFork美化增强版/greasyfork-github-redesign.user.js', github: '1.2.5', published: '1.2.4' },
+  '589199': { name: 'GreasyFork 美化增强版 | GitHub Redesign', path: 'plugins/GreasyFork美化增强版/greasyfork-github-redesign.user.js', github: '1.2.6', published: '1.2.5' },
 };
 
 function userscript(name, version) {
@@ -114,6 +114,8 @@ test('dashboard puts scripts second and navigation state has a cancellation fall
   await page.route('https://greasyfork.org/**', (route) => route.fulfill({
     contentType: 'text/html',
     body: `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>
+      <a id="same-origin-link" href="/zh-CN/scripts">脚本导航</a>
+      <form id="same-origin-form" action="/zh-CN/scripts" method="get"><button type="submit">提交导航</button></form>
       <main class="width-constraint"><section id="about-user"><h2>ywainzh</h2></section>${sections}</main>
     </body></html>`,
   }));
@@ -122,6 +124,26 @@ test('dashboard puts scripts second and navigation state has a cancellation fall
   await expect(page.locator('.gf-dashboard-tab')).toHaveCount(6);
   const labels = await page.locator('.gf-dashboard-tab').allTextContents();
   expect(labels.slice(0, 2).map((label) => label.trim())).toEqual(['控制台', '脚本']);
+  await page.getByRole('tab', { name: '脚本', exact: true }).click();
+  await expect(page.locator('html')).not.toHaveAttribute('data-gf-leaving');
+
+  await page.evaluate(() => {
+    window.navigationGuardChecks = {};
+    document.querySelector('#same-origin-link').addEventListener('click', (event) => {
+      window.navigationGuardChecks.linkWasCovered = document.documentElement.hasAttribute('data-gf-leaving');
+      event.preventDefault();
+    });
+    document.querySelector('#same-origin-form').addEventListener('submit', (event) => {
+      window.navigationGuardChecks.formWasCovered = document.documentElement.hasAttribute('data-gf-leaving');
+      event.preventDefault();
+    });
+  });
+  await page.getByText('脚本导航', { exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.navigationGuardChecks.linkWasCovered)).toBe(true);
+  await expect(page.locator('html')).not.toHaveAttribute('data-gf-leaving');
+  await page.getByRole('button', { name: '提交导航', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.navigationGuardChecks.formWasCovered)).toBe(true);
+  await expect(page.locator('html')).not.toHaveAttribute('data-gf-leaving');
 
   await page.evaluate(() => window.dispatchEvent(new Event('beforeunload')));
   await expect(page.locator('html')).toHaveAttribute('data-gf-leaving', '');
