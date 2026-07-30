@@ -64,6 +64,10 @@ async function bootReader(page, options = {}) {
       await route.fulfill({
         contentType: 'text/html',
         body: `<!doctype html><html><head><meta name="csrf-token" content="test-csrf"><link rel="icon" href="/icon.png"></head><body>
+          ${options.pageHeader ? `<header class="d-header"><div class="panel"><ul class="icons d-header-icons">
+            <li class="header-dropdown-toggle language-switcher"><button type="button">ZH</button></li>
+            <li id="current-user" class="header-dropdown-toggle"><button type="button">User</button></li>
+          </ul></div></header>` : ''}
           <div class="notifications"><a class="raw-topic-link" href="/t/reader/${TOPIC_ID}${options.noTarget ? '' : `/${options.target || POST_COUNT}`}">Open topic</a></div>
         </body></html>`,
       });
@@ -225,6 +229,7 @@ async function bootReader(page, options = {}) {
     });
   }
   await page.addScriptTag({ content: SCRIPT });
+  if (options.skipReaderOpen) return requests;
   await page.click('.raw-topic-link');
   await expect(page.locator('.ldp-v2 .ldp-title')).toHaveText('Reader 2.0 performance topic');
   if (!options.skipTargetAssertion) {
@@ -505,6 +510,22 @@ test('restores history and loads collection tabs when reactions are unavailable'
   await expect(page.locator('.ldp-reader-panel')).toContainText('Saved topic');
   await page.click('[data-tab="posts"]');
   await expect(page.locator('.ldp-reader-panel')).toContainText('Saved floor');
+});
+
+test('opens the shared collection panel from the page header', async ({ page }) => {
+  await bootReader(page, { pageHeader: true, skipReaderOpen: true });
+  const item = page.locator('.d-header-icons > .ldp-page-collections-item');
+  const button = item.locator('.ldp-page-collections-button');
+  await expect(item).toHaveCount(1);
+  expect(await item.evaluate((node) => node.nextElementSibling?.classList.contains('language-switcher'))).toBe(true);
+  await button.click();
+  await expect(button).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('.ldp-page-collection-host .ldp-reader-panel')).toContainText('Liked floor');
+  await page.locator('.ldp-page-collection-host [data-tab="topics"]').click();
+  await expect(page.locator('.ldp-page-collection-host .ldp-reader-panel')).toContainText('Saved topic');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.ldp-page-collection-host')).toHaveCount(0);
+  await expect(button).toHaveAttribute('aria-expanded', 'false');
 });
 
 test('renders the user card immediately and enriches it in phases', async ({ page }) => {

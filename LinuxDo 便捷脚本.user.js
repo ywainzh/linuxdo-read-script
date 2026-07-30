@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      2.0.11
+// @version      2.0.12
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 高性能浮窗阅读帖子，支持虚拟楼层、历史收藏、互动、用户卡片和 Obsidian 快照。
 // @author       Fashion
@@ -580,6 +580,11 @@
     .ldp-panel-empty,.ldp-panel-loading,.ldp-panel-error{padding:32px 18px;text-align:center;color:var(--primary-medium,#6b746f);font-size:13px;}
     .ldp-panel-foot{display:flex;align-items:center;justify-content:space-between;padding:8px 11px;border-top:1px solid var(--primary-low,#e3e7e5);font-size:12px;}
     .ldp-panel-foot button{padding:6px 8px;border:1px solid var(--primary-low,#dce2df);border-radius:5px;color:inherit;background:var(--primary-very-low,#f5f7f6);cursor:pointer;}
+    .ldp-page-collections-button svg{display:block;width:1.15em;height:1.15em;fill:currentColor;}
+    .ldp-page-collections-button[aria-expanded="true"]{color:var(--tertiary,#08c);background:var(--primary-low,#e7e9e8);}
+    .ldp-page-collection-host{position:fixed;inset:0;z-index:2147483500;pointer-events:none;}
+    .ldp-page-collection-host .ldp-reader-panel{position:fixed;z-index:1;pointer-events:auto;
+      width:min(420px,calc(100vw - 16px));height:min(560px,calc(100vh - 72px));}
     .ldp-new-posts{position:absolute;z-index:8;top:12px;left:50%;transform:translateX(-50%);padding:7px 11px;border:1px solid #70a889;
       border-radius:6px;color:#155e3b;background:#e9f5ee;box-shadow:0 6px 18px rgba(30,90,57,.15);cursor:pointer;font-size:12px;}
     .ldp-user-card.ldp-user-card-v2{width:min(420px,calc(100vw - 24px));overflow:hidden;}
@@ -5244,6 +5249,7 @@
     app.panelAbort = null;
     const panel = app.modal && app.modal.querySelector('.ldp-reader-panel');
     if (panel) panel.remove();
+    if (panel && typeof app.onPanelClosed === 'function') app.onPanelClosed();
   }
 
   function panelItemHtml(item, type) {
@@ -5678,6 +5684,128 @@
     return READER_APP.loadTopic(topicId, targetPostNumber);
   }
 
+  let PAGE_COLLECTION_MENU = null;
+  function disposePageCollectionMenu() {
+    const current = PAGE_COLLECTION_MENU;
+    if (!current) return;
+    PAGE_COLLECTION_MENU = null;
+    if (current.app.panelAbort) current.app.panelAbort.abort();
+    current.button.setAttribute('aria-expanded', 'false');
+    current.button.classList.remove('active');
+    current.host.remove();
+    document.removeEventListener('pointerdown', current.onPointerDown, true);
+    document.removeEventListener('keydown', current.onKeyDown, true);
+    window.removeEventListener('resize', current.position);
+  }
+
+  function openPageCollectionMenu(button) {
+    if (!button) return;
+    if (PAGE_COLLECTION_MENU && PAGE_COLLECTION_MENU.button === button) {
+      closeReaderPanel(PAGE_COLLECTION_MENU.app);
+      return;
+    }
+    disposePageCollectionMenu();
+    const host = document.createElement('div');
+    host.className = 'ldp-page-collection-host';
+    document.body.appendChild(host);
+    const app = {
+      modal: host,
+      panelAbort: null,
+      onPanelClosed: disposePageCollectionMenu,
+      loadTopic(topicId, postNumber) {
+        disposePageCollectionMenu();
+        openModalV2(topicId, postNumber);
+      },
+    };
+    Object.defineProperty(app, 'loader', {
+      get() { return READER_APP && !READER_APP.closed ? READER_APP.loader : null; },
+    });
+    showCollectionPanel(app);
+    const panel = host.querySelector('.ldp-reader-panel');
+    if (!panel) {
+      disposePageCollectionMenu();
+      return;
+    }
+    panel.classList.add('ldp-page-collection-panel');
+    const position = () => {
+      if (!button.isConnected || !panel.isConnected) {
+        disposePageCollectionMenu();
+        return;
+      }
+      const rect = button.getBoundingClientRect();
+      const top = Math.max(8, Math.round(rect.bottom + 8));
+      panel.style.top = `${top}px`;
+      panel.style.height = `${Math.max(240, Math.min(560, window.innerHeight - top - 12))}px`;
+      if (window.innerWidth <= 560) {
+        panel.style.left = '8px';
+        panel.style.right = '8px';
+        panel.style.width = 'auto';
+      } else {
+        panel.style.left = 'auto';
+        const panelWidth = Math.min(420, window.innerWidth - 16);
+        const desiredRight = Math.round(window.innerWidth - rect.right);
+        const maxRight = Math.max(8, window.innerWidth - panelWidth - 8);
+        panel.style.right = `${Math.max(8, Math.min(maxRight, desiredRight))}px`;
+        panel.style.width = 'min(420px, calc(100vw - 16px))';
+      }
+    };
+    const onPointerDown = (event) => {
+      if (!host.contains(event.target) && !button.contains(event.target)) closeReaderPanel(app);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') closeReaderPanel(app);
+    };
+    PAGE_COLLECTION_MENU = { app, host, button, panel, position, onPointerDown, onKeyDown };
+    button.setAttribute('aria-expanded', 'true');
+    button.classList.add('active');
+    position();
+    setTimeout(() => {
+      if (PAGE_COLLECTION_MENU && PAGE_COLLECTION_MENU.app === app) {
+        document.addEventListener('pointerdown', onPointerDown, true);
+      }
+    }, 0);
+    document.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('resize', position);
+  }
+
+  function startPageCollectionAction() {
+    let scheduled = false;
+    const ensureButton = () => {
+      scheduled = false;
+      const icons = document.querySelector('.d-header-icons');
+      const language = icons && icons.querySelector(':scope > .language-switcher');
+      const signedIn = icons && icons.querySelector(':scope > #current-user');
+      if (!icons || !signedIn) {
+        document.querySelectorAll('.ldp-page-collections-item').forEach((item) => item.remove());
+        if (PAGE_COLLECTION_MENU && !PAGE_COLLECTION_MENU.button.isConnected) disposePageCollectionMenu();
+        return;
+      }
+      let item = icons.querySelector(':scope > .ldp-page-collections-item');
+      if (!item) {
+        item = document.createElement('li');
+        item.className = 'header-dropdown-toggle ldp-page-collections-item';
+        item.innerHTML = `<button type="button" class="btn no-text btn-icon icon btn-flat ldp-page-collections-button"
+          title="收藏与回应" aria-label="收藏与回应" aria-haspopup="dialog" aria-expanded="false">${READER_ICONS.collection}</button>`;
+        icons.insertBefore(item, language || icons.firstElementChild);
+        item.querySelector('button').addEventListener('click', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          openPageCollectionMenu(event.currentTarget);
+        });
+      } else if (language && item.nextElementSibling !== language) {
+        icons.insertBefore(item, language);
+      }
+    };
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(ensureButton);
+    };
+    const observer = new MutationObserver(schedule);
+    observer.observe(document.body, { childList: true, subtree: true });
+    schedule();
+  }
+
   /* ============ 14. 拦截标题 / 通知点击 ============ */
   document.addEventListener('click', function (e) {
     const a = e.target.closest('a.title, a.raw-topic-link, a.search-link, a.search-result-topic, a[href*="/t/"]');
@@ -5694,4 +5822,5 @@
 
   startBase64MenuObserver();
   startObsidianPageActions();
+  startPageCollectionAction();
 })();

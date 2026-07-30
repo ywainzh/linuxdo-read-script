@@ -1,6 +1,6 @@
 {
   "name": "linuxdo-convenience-reader",
-  "version": "2.0.11",
+  "version": "2.0.12",
   "private": true,
   "scripts": {
     "check": "node --check \"LinuxDo 便捷脚本.user.js\"",
