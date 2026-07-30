@@ -563,7 +563,7 @@ test('keeps multi-level replies as standalone floors and expands direct replies 
   expect(requests.filter((item) => item.type === 'replies')).toHaveLength(0);
 
   const toggle = parent.locator(':scope > .ldp-actions .ldp-reply-toggle');
-  await expect(toggle).toHaveText('1 个回复⌄');
+  await expect(toggle).toHaveText('1 个回复');
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await expect(parent.locator(':scope > .ldp-children > .ldp-embedded-reply[data-post-number="10"]')).toHaveCount(1);
