@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 便捷脚本
 // @namespace    https://linux.do/
-// @version      2.0.8
+// @version      2.0.9
 // @license      MIT
 // @description  在 LINUX DO 与 IDC Flare 高性能浮窗阅读帖子，支持虚拟楼层、历史收藏、互动、用户卡片和 Obsidian 快照。
 // @author       Fashion
@@ -28,11 +28,6 @@
   let ME_USERNAME = null;
   let ME_USER = null;
   let ME_STATE = 'unknown';
-
-  // --- 楼中楼分批加载配置 ---
-  const SUB_REPLY_INITIAL_SIZE = 3;   // 楼中楼默认展示条数
-  const SUB_REPLY_PAGE_SIZE = 10;     // 每次点击“展示更多”追加条数
-  const REPLIES_HOVER_DELAY = 400;    // 楼层在视口停留超过此时长才触发抓取(ms)
 
   // --- 全局只读请求队列 & HTTP 429 退避重试 ---
   const REQUEST_MIN_INTERVAL = 100;   // 相邻 GET 请求最小间隔(ms)
@@ -414,13 +409,10 @@
     .ldp-lb-x:hover{background:rgba(255,255,255,.14);}
     .ldp-lb-x:focus-visible{outline:3px solid #fff;outline-offset:2px;}
 
-    /* 楼中楼“展示更多回复”按钮 */
-    .ldp-sub-actions{margin-left:22px;padding-left:14px;margin-top:2px;display:none;}
-    .ldp-load-more-replies{font-size:12px;color:var(--tertiary,#08c);font-weight:600;
-      opacity:.9;padding:4px 0;}
-    .ldp-load-more-replies:hover{opacity:1;text-decoration:underline;}
-    .ldp-sub-loading{font-size:12px;opacity:.5;margin-left:22px;padding-left:14px;
-      margin-top:2px;display:none;}
+    /* 原帖式直属回复折叠 */
+    .ldp-reply-toggle{color:var(--primary-medium,#777);font-weight:500;}
+    .ldp-reply-toggle:hover,.ldp-reply-toggle[aria-expanded="true"]{color:var(--tertiary,#08c);opacity:1;}
+    .ldp-reply-toggle.is-error{color:var(--danger,#c44);}
 
     /* ============ Boost样式（仿官方 discourse-boosts 插件，独立实现） ============ */
     /* 气泡列表 */
@@ -542,11 +534,16 @@
     .ldp-reply-summary::before{content:"";position:absolute;left:3px;top:9px;bottom:9px;width:2px;border-radius:2px;background:#79aa90;}
     .ldp-reply-summary:not(.expanded) > .ldp-content{max-height:5.1em;overflow:hidden;mask-image:linear-gradient(#000 65%,transparent);}
     .ldp-thread-toggle{margin:0 0 5px 31px;padding:0;border:0;color:#28724d;background:transparent;cursor:pointer;font-size:11px;}
-    .ldp-children{margin-left:31px;border-left:2px solid #74aa8c;}
-    .ldp-children > .ldp-post-copy{margin:0;padding-left:12px;background:var(--secondary,#fff);}
-    .ldp-post-copy > .ldp-children{margin-left:18px;}
-    .ldp-post-copy.ldp-reply-depth-capped > .ldp-children{margin-left:0;}
-    .ldp-reply-gap{padding:6px 10px;color:var(--primary-medium,#777);font-size:11px;border-bottom:1px dashed var(--primary-low,#ddd);}
+    .ldp-children{display:none;margin:8px 0 0 31px;border-left:2px solid #74aa8c;}
+    .ldp-children.expanded{display:block;}
+    .ldp-embedded-reply{position:relative;padding:10px 12px;border-bottom:1px solid var(--primary-low,#e1e4e2);
+      background:color-mix(in srgb,var(--secondary,#fff) 93%,var(--primary,#222) 7%);}
+    .ldp-embedded-reply:last-child{border-bottom:0;}
+    .ldp-embedded-head{display:flex;align-items:center;gap:7px;margin-bottom:6px;font-size:12px;min-width:0;}
+    .ldp-embedded-reply .ldp-avatar{width:24px;height:24px;}
+    .ldp-embedded-reply .ldp-content{margin:0;font-size:13px;}
+    .ldp-embedded-jump{margin-left:auto;flex:none;color:var(--primary-medium,#777);font-size:11px;}
+    .ldp-embedded-jump:hover{color:var(--tertiary,#08c);opacity:1;}
     .ldp-reaction-picker{display:none;align-items:center;gap:4px;width:max-content;margin:5px 0 0 38px;padding:5px;
       border:1px solid var(--primary-low,#dfe4e1);border-radius:6px;background:var(--secondary,#fff);box-shadow:0 8px 24px rgba(24,35,28,.14);}
     .ldp-reaction-picker.open{display:flex;}
@@ -2862,6 +2859,7 @@
     const currentReaction = String((p.current_user_reaction && p.current_user_reaction.id) || '');
     const reactionCount = (p.reactions || []).reduce((sum, item) => sum + Math.max(0, Number(item.count) || 0), 0);
     const validReactions = validReactionIds(ctx.topic, p);
+    const directReplyCount = Math.max(0, Number(p.reply_count) || 0);
 
     const lastReadPostNumber = Math.max(1, Number(
       ctx.tracker && ctx.tracker.getReadWaterline ? ctx.tracker.getReadWaterline() : ctx.lastReadPostNumber
@@ -2903,6 +2901,8 @@
         <button class="ldp-btn ldp-replybtn" title="回复">
             <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.reply}</svg>
         </button>
+        ${directReplyCount ? `<button type="button" class="ldp-btn ldp-reply-toggle"
+          aria-expanded="false" aria-label="此楼层有 ${directReplyCount} 条直属回复">${directReplyCount} 个回复⌄</button>` : ''}
         ${REACTIONS_AVAILABLE !== false && (validReactions.length || reactionCount) ? `<button class="ldp-btn ldp-reaction-btn ${currentReaction ? 'reacted' : ''}"
           data-current-reaction="${escAttr(currentReaction)}" data-valid-reactions="${escAttr(validReactions.join(','))}"
           title="添加回应" aria-label="添加回应">${currentReaction ? reactionLabel(currentReaction) : '☺'}${reactionCount ? `<span class="ldp-reaction-count">${reactionCount}</span>` : ''}</button>` : ''}
@@ -2915,8 +2915,6 @@
         </button>
       </div>
       <div class="ldp-children"></div>
-      <div class="ldp-sub-loading">加载楼中楼中…</div>
-      <div class="ldp-sub-actions"><button class="ldp-btn ldp-load-more-replies">展示更多回复 ↓</button></div>
     `;
     const content = node.querySelector('.ldp-content');
     content.querySelectorAll('a[href]').forEach((anchor) => {
@@ -2936,7 +2934,7 @@
     return node;
   }
 
-  function syncRenderedPostState(root, post) {
+  function syncRenderedPostState(root, post, ctx) {
     if (!root || !post || !post.id) return;
     const { count, acted } = likeInfo(post);
     const currentReaction = String((post.current_user_reaction && post.current_user_reaction.id) || '');
@@ -2958,6 +2956,7 @@
         reaction.dataset.currentReaction = currentReaction;
         reaction.innerHTML = `${currentReaction ? reactionLabel(currentReaction) : '☺'}${reactionCount ? `<span class="ldp-reaction-count">${reactionCount}</span>` : ''}`;
       }
+      if (ctx) updateReplyToggle(node, post.post_number, ctx);
     });
   }
 
@@ -3030,110 +3029,109 @@
     });
   }
 
-  /* ============ 9. 楼中楼分批渲染 ============ */
-  function mergeSubReplyState(postNumber, replies, ctx, targetPostId) {
-    const existing = ctx.subReplyState.get(Number(postNumber));
+  /* ============ 9. 原帖式直属回复折叠 ============ */
+  function renderEmbeddedReply(post, ctx) {
+    const avatar = resolveAvatar(post.avatar_template, 32);
+    const time = fmtTime(post.created_at);
+    const node = document.createElement('div');
+    node.className = 'ldp-embedded-reply';
+    node.dataset.postId = String(post.id);
+    node.dataset.postNumber = String(post.post_number);
+    node.setAttribute('aria-label', `楼层 #${post.post_number} 的直属回复`);
+    node.innerHTML = `
+      <div class="ldp-embedded-head">
+        ${avatar ? `<button type="button" class="ldp-avatar-btn" title="查看 ${escAttr(post.username)} 的个人详情"
+          aria-label="查看 ${escAttr(post.username)} 的个人详情" data-username="${escAttr(post.username)}">
+          <img class="ldp-avatar" src="${escAttr(avatar)}" alt="" loading="lazy" decoding="async"></button>` : ''}
+        <span class="ldp-author">${esc(post.name || post.username)}</span>
+        <span class="ldp-user">@${esc(post.username)}</span>
+        ${ctx.op && post.username === ctx.op ? '<span class="ldp-op">OP</span>' : ''}
+        ${time ? `<span class="ldp-time">· ${esc(time)}</span>` : ''}
+        <button type="button" class="ldp-btn ldp-embedded-jump" data-post-number="${Number(post.post_number)}"
+          title="跳到原始楼层">跳到 #${Number(post.post_number)}</button>
+      </div>
+      <div class="ldp-content">${post.cooked || ''}</div>`;
+    const content = node.querySelector('.ldp-content');
+    content.querySelectorAll('a[href]').forEach((anchor) => {
+      if (!isImageAnchor(anchor) && !anchor.getAttribute('target')) anchor.setAttribute('target', '_blank');
+    });
+    content.querySelectorAll('img').forEach((img) => {
+      if (!img.hasAttribute('loading')) img.setAttribute('loading', 'lazy');
+      if (!img.hasAttribute('decoding')) img.setAttribute('decoding', 'async');
+    });
+    content.querySelectorAll('iframe').forEach((iframe) => {
+      if (!iframe.hasAttribute('loading')) iframe.setAttribute('loading', 'lazy');
+    });
+    enhanceCodeBlocks(node);
+    return node;
+  }
+
+  function mergeSubReplyState(postNumber, replies, ctx, options) {
+    const key = Number(postNumber);
+    const state = ctx.subReplyState.get(key)
+      || { all: [], expanded: false, loaded: false, loading: false, error: null };
     const byId = new Map();
-    [...((existing && existing.all) || []), ...(replies || [])].forEach((reply) => {
-      if (!reply || !reply.id || Number(reply.reply_to_post_number) !== Number(postNumber)) return;
+    [...state.all, ...(replies || [])].forEach((reply) => {
+      if (!reply || !reply.id || Number(reply.reply_to_post_number) !== key) return;
       const canonical = ctx.loader.getPostById(reply.id) || reply;
       byId.set(Number(canonical.id), canonical);
     });
-    const state = existing || { all: [], renderedCount: 0, targetIds: new Set() };
     state.all = Array.from(byId.values()).sort((a, b) => Number(a.post_number) - Number(b.post_number));
-    if (!(state.targetIds instanceof Set)) state.targetIds = new Set(state.targetIds || []);
-    if (targetPostId) state.targetIds.add(Number(targetPostId));
-    state.renderedCount = Math.max(Number(state.renderedCount) || 0, Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length));
-    ctx.subReplyState.set(Number(postNumber), state);
+    if (options && options.loaded) state.loaded = true;
+    state.loading = false;
+    state.error = null;
+    ctx.subReplyState.set(key, state);
     return state;
   }
 
-  function clearRenderedReplyChildren(children, ctx) {
-    if (!children) return;
-    children.querySelectorAll('.ldp-post[data-post-id]').forEach((node) => {
-      ctx.tracker.unobserve(node);
-      if (ctx.repliesIO && ctx.repliesIO.clearNode) ctx.repliesIO.clearNode(node);
-      const postNumber = Number(node.dataset.postNumber);
-      if (ctx.nodeMap.get(postNumber) === node) ctx.nodeMap.delete(postNumber);
-    });
-    children.replaceChildren();
+  function updateReplyToggle(parentNode, postNumber, ctx) {
+    if (!parentNode) return;
+    const state = ctx.subReplyState.get(Number(postNumber));
+    const post = ctx.loader.getPostById(parentNode.dataset.postId);
+    const count = Math.max(Number(post && post.reply_count) || 0, Number(state && state.all.length) || 0);
+    let button = parentNode.querySelector(':scope > .ldp-actions .ldp-reply-toggle');
+    if (!button && count > 0) {
+      button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ldp-btn ldp-reply-toggle';
+      const replyButton = parentNode.querySelector(':scope > .ldp-actions .ldp-replybtn');
+      if (replyButton) replyButton.after(button);
+    }
+    if (!button) return;
+    button.hidden = count <= 0 && !(state && state.error);
+    button.setAttribute('aria-label', `此楼层有 ${count} 条直属回复`);
+    button.classList.toggle('is-error', !!(state && state.error));
+    button.setAttribute('aria-expanded', state && state.expanded ? 'true' : 'false');
+    if (state && state.loading) button.textContent = '回复加载中…';
+    else if (state && state.error) button.textContent = '加载失败，点击重试';
+    else button.textContent = `${count} 个回复${state && state.expanded ? '⌃' : '⌄'}`;
   }
 
-  function renderSubReplyStateInto(parentNode, postNumber, ctx, depth, ancestry) {
+  function renderSubReplyStateInto(parentNode, postNumber, ctx) {
     const state = ctx.subReplyState.get(Number(postNumber));
     if (!state || !parentNode) return;
     const children = parentNode.querySelector(':scope > .ldp-children');
     if (!children) return;
-    clearRenderedReplyChildren(children, ctx);
-    const selected = [];
-    state.all.forEach((reply, index) => {
-      if (index < state.renderedCount || state.targetIds.has(Number(reply.id))) selected.push({ reply, index });
-    });
-    let previousIndex = -1;
-    selected.forEach(({ reply, index }) => {
-      if (index - previousIndex > 1) {
-        const gap = document.createElement('div');
-        gap.className = 'ldp-reply-gap';
-        gap.textContent = `省略 ${index - previousIndex - 1} 条回复`;
-        children.appendChild(gap);
-      }
-      previousIndex = index;
-      const canonical = ctx.loader.getPostById(reply.id) || reply;
-      if (ancestry.has(Number(canonical.id))) return;
-      const copy = renderPost(canonical, true, ctx);
-      const nextDepth = Math.max(1, Number(depth) || 1);
-      copy.classList.add('ldp-post-copy');
-      copy.dataset.replyDepth = String(nextDepth);
-      if (nextDepth >= 3) copy.classList.add('ldp-reply-depth-capped');
-      copy.setAttribute('aria-label', `#${canonical.post_number} 的直属回复`);
-      children.appendChild(copy);
-      ctx.nodeMap.set(Number(canonical.post_number), copy);
-      ctx.tracker.observe(copy);
-      if (ctx.repliesIO && Number(canonical.reply_count) > 0) ctx.repliesIO.observe(copy);
-
-      const knownChildren = ctx.loader.getKnownChildren(canonical.post_number);
-      if (knownChildren.length) {
-        const childState = mergeSubReplyState(canonical.post_number, knownChildren, ctx);
-        if (!childState.renderedCount) childState.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, childState.all.length);
-        const nextAncestry = new Set(ancestry); nextAncestry.add(Number(canonical.id));
-        renderSubReplyStateInto(copy, canonical.post_number, ctx, nextDepth + 1, nextAncestry);
-      }
-    });
-    if (state.all.length - previousIndex > 1 && state.targetIds.size) {
-      const gap = document.createElement('div');
-      gap.className = 'ldp-reply-gap';
-      gap.textContent = `省略 ${state.all.length - previousIndex - 1} 条回复`;
-      children.appendChild(gap);
+    children.replaceChildren();
+    children.classList.toggle('expanded', !!state.expanded);
+    if (state.expanded) {
+      const fragment = document.createDocumentFragment();
+      state.all.forEach((reply) => {
+        fragment.appendChild(renderEmbeddedReply(ctx.loader.getPostById(reply.id) || reply, ctx));
+      });
+      children.appendChild(fragment);
     }
-    const actionEl = parentNode.querySelector(':scope > .ldp-sub-actions');
-    const btnEl = actionEl && actionEl.querySelector('.ldp-load-more-replies');
-    const remaining = Math.max(0, state.all.length - state.renderedCount);
-    if (remaining > 0) {
-      if (actionEl) actionEl.style.display = 'block';
-      if (btnEl) btnEl.textContent = `展示更多回复（还剩 ${remaining} 条） ↓`;
-    } else if (actionEl) actionEl.style.display = 'none';
+    updateReplyToggle(parentNode, postNumber, ctx);
   }
 
   function renderSubReplyState(postNumber, ctx) {
-    const parentNode = ctx.nodeMap.get(Number(postNumber)) || ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`);
+    const parentNode = ctx.nodeMap.get(Number(postNumber))
+      || ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`);
     if (!parentNode) return;
-    const mutate = () => renderSubReplyStateInto(parentNode, postNumber, ctx, 1, new Set([Number(parentNode.dataset.postId)]));
+    const mutate = () => renderSubReplyStateInto(parentNode, postNumber, ctx);
     if (ctx.withViewportAnchor) ctx.withViewportAnchor(mutate);
     else mutate();
     if (ctx.refreshRenderRevision) ctx.refreshRenderRevision(parentNode);
-  }
-
-  function renderSubReplyBatch(postNumber, ctx) {
-    const state = ctx.subReplyState.get(postNumber);
-    const parentNode = ctx.nodeMap.get(postNumber) || (ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`));
-    if (!state || !parentNode) return;
-
-    const start = state.renderedCount;
-    const limit = start === 0 ? SUB_REPLY_INITIAL_SIZE : SUB_REPLY_PAGE_SIZE;
-    const batch = state.all.slice(start, start + limit);
-
-    state.renderedCount += batch.length;
-    renderSubReplyState(postNumber, ctx);
     if (ctx.onPostsChanged) ctx.onPostsChanged();
   }
 
@@ -3160,6 +3158,13 @@
         return;
       }
 
+      const embeddedJump = e.target.closest('.ldp-embedded-jump');
+      if (embeddedJump && ctx.virtualFlow) {
+        e.preventDefault();
+        await ctx.virtualFlow.seekToPost(Number(embeddedJump.dataset.postNumber));
+        return;
+      }
+
       const threadToggle = e.target.closest('.ldp-thread-toggle');
       if (threadToggle) {
         const summary = threadToggle.closest('.ldp-reply-summary');
@@ -3168,11 +3173,10 @@
         return;
       }
 
-      // 楼中楼“展示更多回复”按钮
-      const moreBtn = e.target.closest('.ldp-load-more-replies');
-      if (moreBtn) {
-        const post = moreBtn.closest('.ldp-post');
-        renderSubReplyBatch(+post.dataset.postNumber, ctx);
+      const replyToggle = e.target.closest('.ldp-reply-toggle');
+      if (replyToggle && ctx.repliesIO) {
+        const post = replyToggle.closest('.ldp-post');
+        await ctx.repliesIO.toggle(post);
         return;
       }
 
@@ -3415,7 +3419,25 @@
           if (postData && postData.cooked) {
             if (ctx.loader) {
               if (!postData.reply_to_post_number) postData.reply_to_post_number = postNumber;
-              ctx.loader.mergePost(postData);
+              const canonicalReply = ctx.loader.mergePost(postData) || postData;
+              const parentPost = ctx.loader.getPostByNumber(postNumber);
+              if (parentPost) {
+                ctx.loader.updatePost(parentPost.id, {
+                  reply_count: Math.max(0, Number(parentPost.reply_count) || 0) + 1,
+                });
+                const parentNode = ctx.nodeMap.get(Number(postNumber));
+                const cacheKey = String(parentPost.id);
+                if (ctx.subReplyCache.has(cacheKey)) {
+                  const replies = [...(ctx.subReplyCache.get(cacheKey) || []), canonicalReply];
+                  ctx.subReplyCache.set(cacheKey, replies);
+                  mergeSubReplyState(postNumber, replies, ctx, { loaded: true });
+                }
+                if (parentNode) {
+                  const state = ctx.subReplyState.get(Number(postNumber));
+                  if (state && state.expanded) renderSubReplyState(postNumber, ctx);
+                  else updateReplyToggle(parentNode, postNumber, ctx);
+                }
+              }
               ctx.totalComments = (ctx.totalComments || 0) + 1;
               updateCommentsHeader(ctx);
               invalidateTopicSnapshot(ctx.topicId).catch(() => {});
@@ -3478,194 +3500,83 @@
     });
   }
 
-  /* ============ 11. 楼中楼补全（分批渲染 + 节流 + 停顿检测） ============ */
+  /* ============ 11. 直属回复按需加载 ============ */
   function createRepliesIO(ctx) {
-    const fetched = new Set();
     const inFlight = new Map();
-    const hoverTimers = new Map();
-    const pendingReplies = new Map();
-    const appliedReplyParents = new Set();
-    let scrollActive = false;
-
-    const applyReplies = (node, replies, targetPostId, render) => {
-      if (!node || !node.isConnected) return null;
-      const postId = Number(node.dataset.postId);
-      const postNumber = Number(node.dataset.postNumber);
-      const existingState = ctx.subReplyState.get(postNumber);
-      const canonicalReplies = (replies || []).map((reply) => ctx.loader.mergePost(reply) || reply);
-      const knownReplies = ctx.loader.getKnownChildren(postNumber);
-      const merged = [...knownReplies, ...canonicalReplies];
-      if (replies) ctx.subReplyCache.set(String(postId), canonicalReplies);
-      const state = mergeSubReplyState(postNumber, merged, ctx, targetPostId);
-      appliedReplyParents.add(String(postId));
-      if (!state.renderedCount) state.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length);
-      const needsRender = canonicalReplies.length > 0 || !existingState || !!targetPostId;
-      if (render !== false && needsRender) {
-        renderSubReplyState(postNumber, ctx);
-        if (ctx.onPostsChanged) ctx.onPostsChanged();
-      }
-      return state;
-    };
-
-    const commitOrQueue = (node, replies, targetPostId, immediate) => {
-      if (!node || !node.isConnected) return null;
-      const postId = String(node.dataset.postId || '');
-      if (!postId) return null;
-      ctx.subReplyCache.set(postId, replies || []);
-      if (scrollActive && !immediate) {
-        pendingReplies.set(postId, {
-          postId, postNumber: Number(node.dataset.postNumber), replies: replies || [], targetPostId,
-        });
-        return null;
-      }
-      pendingReplies.delete(postId);
-      return applyReplies(node, replies, targetPostId);
-    };
-
-    const flushPendingReplies = () => {
-      if (scrollActive || !pendingReplies.size) return 0;
-      const batch = Array.from(pendingReplies.values());
-      pendingReplies.clear();
-      const renderedParents = [];
-      const mutate = () => {
-        batch.forEach((entry) => {
-          const node = ctx.nodeMap.get(Number(entry.postNumber));
-          if (!node || !node.isConnected || String(node.dataset.postId) !== entry.postId) return;
-          const needsLayout = entry.replies.length > 0
-            || !ctx.subReplyState.has(Number(entry.postNumber)) || !!entry.targetPostId;
-          if (applyReplies(node, entry.replies, entry.targetPostId, false) && needsLayout) {
-            renderedParents.push(entry.postNumber);
-          }
-        });
-        renderedParents.forEach((postNumber) => {
-          const parent = ctx.nodeMap.get(Number(postNumber));
-          if (parent && parent.isConnected) {
-            renderSubReplyStateInto(parent, postNumber, ctx, 1, new Set([Number(parent.dataset.postId)]));
-            if (ctx.refreshRenderRevision) ctx.refreshRenderRevision(parent);
-          }
-        });
-      };
-      if (ctx.withViewportAnchor) ctx.withViewportAnchor(mutate); else mutate();
-      if (renderedParents.length && ctx.onPostsChanged) ctx.onPostsChanged();
-      return renderedParents.length;
-    };
-
-    const loadForNode = async (node, options) => {
+    const loadForNode = async (node) => {
       if (!node || !node.isConnected) return [];
       const postId = String(node.dataset.postId || '');
-      const targetPostId = options && options.targetPostId;
-      const immediate = !!(options && options.priority === 'target');
+      const postNumber = Number(node.dataset.postNumber);
       if (!postId) return [];
       if (ctx.subReplyCache.has(postId)) {
         const cached = ctx.subReplyCache.get(postId) || [];
-        if (appliedReplyParents.has(postId)) return cached;
-        commitOrQueue(node, cached, targetPostId, immediate);
+        mergeSubReplyState(postNumber, cached, ctx, { loaded: true });
         return cached;
       }
-      if (inFlight.has(postId)) {
-        const replies = await inFlight.get(postId);
-        commitOrQueue(node, replies, targetPostId, immediate);
-        return replies;
-      }
-      const loadingEl = node.querySelector(':scope > .ldp-sub-loading');
-      if (loadingEl && immediate) {
-        const showLoading = () => { loadingEl.style.display = 'block'; };
-        if (ctx.withViewportAnchor) ctx.withViewportAnchor(showLoading); else showLoading();
-      }
+      if (inFlight.has(postId)) return inFlight.get(postId);
       const request = fetchJSON(`${BASE}/posts/${postId}/replies.json`, {
-        signal: ctx.signal, priority: options && options.priority === 'target' ? 'target' : 'visible',
+        signal: ctx.signal, priority: 'visible',
         dedupeKey: `direct-replies:${BASE}:${postId}`,
-      }).then((items) => Array.isArray(items) ? items : []);
+      }).then((items) => {
+        const replies = (Array.isArray(items) ? items : [])
+          .filter((reply) => Number(reply.reply_to_post_number) === postNumber)
+          .map((reply) => ctx.loader.mergePost(reply) || reply);
+        ctx.subReplyCache.set(postId, replies);
+        mergeSubReplyState(postNumber, replies, ctx, { loaded: true });
+        const parent = ctx.loader.getPostById(postId);
+        if (parent && Number(parent.reply_count) !== replies.length) {
+          ctx.loader.updatePost(postId, { reply_count: replies.length });
+        }
+        return replies;
+      });
       inFlight.set(postId, request);
       try {
-        const replies = await request;
-        fetched.add(postId);
-        ctx.subReplyCache.set(postId, replies);
-        if (node.isConnected) commitOrQueue(node, replies, targetPostId, immediate);
-        return replies;
+        return await request;
       } finally {
         inFlight.delete(postId);
-        if (loadingEl && loadingEl.isConnected) {
-          const hideLoading = () => { loadingEl.style.display = 'none'; };
-          if (ctx.withViewportAnchor) ctx.withViewportAnchor(hideLoading); else hideLoading();
-        }
       }
     };
 
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach((en) => {
-        const postId = String(en.target.dataset.postId || '');
-        if (!postId) return;
-
-        if (en.isIntersecting) {
-          if (ctx.subReplyCache.has(postId)) {
-            commitOrQueue(en.target, ctx.subReplyCache.get(postId), null, false);
-            return;
-          }
-          if (fetched.has(postId) || hoverTimers.has(postId)) return;
-          // 停顿检测：楼层需在视口停留 REPLIES_HOVER_DELAY 才真正发起请求，快速划过则不触发
-          const timer = setTimeout(() => {
-            hoverTimers.delete(postId);
-            if (!en.target.isConnected) return;
-            loadForNode(en.target).catch(() => { fetched.delete(postId); });
-          }, REPLIES_HOVER_DELAY);
-          hoverTimers.set(postId, timer);
-        } else {
-          // 离开视口时若尚未真正发起请求，则取消该次触发
-          if (hoverTimers.has(postId)) {
-            clearTimeout(hoverTimers.get(postId));
-            hoverTimers.delete(postId);
-          }
-        }
-      });
-    }, { root: ctx.scrollRoot, rootMargin: '120px', threshold: 0.1 });
-
-    const clearNode = (node) => {
-      if (!node) return;
-      observer.unobserve(node);
-      const postId = node.dataset.postId;
-      if (postId && hoverTimers.has(postId)) {
-        clearTimeout(hoverTimers.get(postId));
-        hoverTimers.delete(postId);
+    const toggle = async (node) => {
+      if (!node || !node.isConnected) return;
+      const postNumber = Number(node.dataset.postNumber);
+      let state = ctx.subReplyState.get(postNumber);
+      if (!state) {
+        state = mergeSubReplyState(postNumber, ctx.loader.getKnownChildren(postNumber), ctx);
       }
+      if (state.expanded) {
+        state.expanded = false;
+        renderSubReplyState(postNumber, ctx);
+        return;
+      }
+      state.expanded = true;
+      state.error = null;
+      if (state.loaded) {
+        renderSubReplyState(postNumber, ctx);
+        return;
+      }
+      state.loading = true;
+      updateReplyToggle(node, postNumber, ctx);
+      try {
+        await loadForNode(node);
+      } catch (error) {
+        state.loading = false;
+        state.error = error;
+        state.expanded = false;
+      }
+      if (node.isConnected) renderSubReplyState(postNumber, ctx);
     };
-    const nativeDisconnect = observer.disconnect.bind(observer);
-    const controller = {
-      observe(node) { if (node) observer.observe(node); },
-      unobserve(node) { if (node) observer.unobserve(node); },
-      clearNode,
+
+    return {
+      toggle,
       loadForNode,
-      setScrollActive(active) { scrollActive = !!active; },
-      flushPendingReplies,
-      revealPath(path) {
-        const posts = (path || []).filter(Boolean);
-        if (posts.length < 2) return null;
-        const mutate = () => {
-          for (let index = 0; index < posts.length - 1; index++) {
-            const parent = posts[index], child = posts[index + 1];
-            const parentNode = ctx.nodeMap.get(Number(parent.post_number));
-            mergeSubReplyState(parent.post_number, [child, ...ctx.loader.getKnownChildren(parent.post_number)], ctx, child.id);
-            const state = ctx.subReplyState.get(Number(parent.post_number));
-            if (state && !state.renderedCount) state.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length);
-            if (parentNode) renderSubReplyStateInto(parentNode, parent.post_number, ctx, index + 1, new Set(posts.slice(0, index + 1).map((post) => Number(post.id))));
-          }
-        };
-        if (ctx.withViewportAnchor) ctx.withViewportAnchor(mutate); else mutate();
-        posts.slice(0, -1).forEach((post) => {
-          const node = ctx.nodeMap.get(Number(post.post_number));
-          if (node && Number(post.reply_count) > 0) loadForNode(node, { priority: 'target', targetPostId: posts[posts.length - 1].id }).catch(() => {});
-        });
-        return ctx.nodeMap.get(Number(posts[posts.length - 1].post_number)) || null;
-      },
-      disconnect() {
-        hoverTimers.forEach((timer) => clearTimeout(timer));
-        hoverTimers.clear();
-        pendingReplies.clear();
-        appliedReplyParents.clear();
-        nativeDisconnect();
-      },
+      observe() {},
+      unobserve() {},
+      clearNode() {},
+      setScrollActive() {},
+      flushPendingReplies() { return 0; },
+      disconnect() { inFlight.clear(); },
     };
-    return controller;
   }
 
   /* ============ 12. 收藏 ============ */
@@ -4031,10 +3942,8 @@
     const postIdByNumber = new Map();
     const parentNumberByPostId = new Map();
     const childrenByParentNumber = new Map();
-    const orphanReplyIds = new Set();
     const streamListeners = new Set();
     const postListeners = new Set();
-    const projectionListeners = new Set();
     let prefetchedAnchor = null;
     let refreshPromise = null;
     let streamRevision = 0;
@@ -4043,23 +3952,10 @@
     let snapshotDirty = false;
     let snapshotSuspended = 0;
     let snapshotWriting = false;
-    let projectionRevision = 0;
-    let projectionScheduled = false;
 
     const bumpPostRevision = (postId) => {
       const id = Number(postId);
       postRevisions.set(id, (postRevisions.get(id) || 0) + 1);
-    };
-
-    const emitProjection = () => {
-      if (projectionScheduled) return;
-      projectionScheduled = true;
-      queueMicrotask(() => {
-        projectionScheduled = false;
-        projectionRevision += 1;
-        const ids = getRootStreamIds();
-        projectionListeners.forEach((listener) => listener(ids, projectionRevision));
-      });
     };
 
     const indexPost = (post) => {
@@ -4082,9 +3978,7 @@
         childrenByParentNumber.get(nextParent).add(id);
       } else {
         parentNumberByPostId.delete(id);
-        orphanReplyIds.delete(id);
       }
-      return previousParent !== nextParent;
     };
 
     const rebuildReplyIndex = () => {
@@ -4093,28 +3987,17 @@
     };
 
     const cachePosts = (posts, emit) => {
-      let projectionChanged = false;
       const changed = (posts || []).filter((post) => post && post.id).map((post) => {
         const id = Number(post.id);
         const next = Object.assign({}, cache.get(id) || {}, post);
         cache.set(id, next);
         bumpPostRevision(id);
-        projectionChanged = indexPost(next) || projectionChanged;
+        indexPost(next);
         return next;
       });
       if (emit) emitPosts(changed);
-      if (projectionChanged) emitProjection();
       return changed;
     };
-
-    function isNestedPostId(postId) {
-      const id = Number(postId);
-      return parentNumberByPostId.has(id) && !orphanReplyIds.has(id);
-    }
-
-    function getRootStreamIds() {
-      return stream.filter((id) => !isNestedPostId(id));
-    }
 
     function getPostByNumber(postNumber) {
       const id = postIdByNumber.get(Number(postNumber));
@@ -4313,56 +4196,24 @@
       return { index, postNumber: resolved ? resolved.post_number : target, start, end, posts };
     }
 
-    function markOrphanReply(postId) {
-      const id = Number(postId);
-      if (!parentNumberByPostId.has(id) || orphanReplyIds.has(id)) return;
-      orphanReplyIds.add(id);
-      emitProjection();
-    }
-
-    async function resolveExactPost(postNumber, requestSignal) {
-      const expected = Math.max(1, Number(postNumber) || 1);
-      let post = getPostByNumber(expected);
-      if (post) return post;
-      await resolveTarget(expected, requestSignal);
-      post = getPostByNumber(expected);
-      return post && Number(post.post_number) === expected ? post : null;
-    }
-
     async function resolveThreadTarget(targetPostNumber, requestSignal) {
       const requested = Math.max(1, Number(targetPostNumber) || 1);
       if (requested <= 1) {
         return { index: 0, postNumber: 1, targetPostNumber: 1, rootPostId: null, targetPostId: null, path: [] };
       }
       const resolved = await resolveTarget(requested, requestSignal);
-      let targetPost = getPostByNumber(requested)
+      const targetPost = getPostByNumber(requested)
         || getPostByNumber(resolved.postNumber)
         || cache.get(Number(stream[resolved.index])) || null;
       if (!targetPost) return Object.assign({}, resolved, { targetPostNumber: requested, path: [] });
-
-      const reversePath = [targetPost];
-      const visited = new Set([Number(targetPost.id)]);
-      let current = targetPost;
-      for (let depth = 0; depth < 64 && Number(current.reply_to_post_number) > 1; depth++) {
-        const parent = await resolveExactPost(current.reply_to_post_number, requestSignal);
-        if (!parent || visited.has(Number(parent.id))) {
-          markOrphanReply(current.id);
-          break;
-        }
-        reversePath.push(parent);
-        visited.add(Number(parent.id));
-        current = parent;
-      }
-      const path = reversePath.reverse();
-      const rootPost = path[0] || targetPost;
-      const rootIndex = streamIndex.get(String(rootPost.id));
+      const targetIndex = streamIndex.get(String(targetPost.id));
       return {
-        index: rootIndex === undefined ? resolved.index : rootIndex,
-        postNumber: Number(rootPost.post_number) || resolved.postNumber,
-        rootPostId: Number(rootPost.id) || null,
+        index: targetIndex === undefined ? resolved.index : targetIndex,
+        postNumber: Number(targetPost.post_number) || resolved.postNumber,
+        rootPostId: Number(targetPost.id) || null,
         targetPostId: Number(targetPost.id) || null,
         targetPostNumber: Number(targetPost.post_number) || requested,
-        path,
+        path: [targetPost],
       };
     }
 
@@ -4394,7 +4245,7 @@
       if (!next) return current;
       cache.set(id, next);
       bumpPostRevision(id);
-      if (indexPost(next)) emitProjection();
+      indexPost(next);
       emitPosts([next]);
       scheduleSnapshotWrite();
       return next;
@@ -4431,18 +4282,15 @@
       getPostRevision(postId) { return postRevisions.get(Number(postId)) || 0; },
       getPostByNumber,
       getStreamIds() { return stream.slice(); },
-      getRootStreamIds,
       getKnownChildren,
-      isNestedPostId,
       getCachedPosts() { return Array.from(cache.values()); },
       subscribeStream(listener) { streamListeners.add(listener); return () => streamListeners.delete(listener); },
       subscribePosts(listener) { postListeners.add(listener); return () => postListeners.delete(listener); },
-      subscribeProjection(listener) { projectionListeners.add(listener); return () => projectionListeners.delete(listener); },
       destroy() {
         if (snapshotTimer) clearTimeout(snapshotTimer);
         if (snapshotMaxTimer) clearTimeout(snapshotMaxTimer);
         snapshotTimer = snapshotMaxTimer = 0;
-        streamListeners.clear(); postListeners.clear(); projectionListeners.clear();
+        streamListeners.clear(); postListeners.clear();
         if (snapshotDirty) flushSnapshot().catch(() => {});
       },
     };
@@ -4460,8 +4308,8 @@
     const DISCONTINUOUS_SCROLL_SCREENS = 1.5;
     const displayStreamIds = () => onlyOp
       ? loader.getStreamIds().filter((id) => (loader.getPostById(id) || {}).username === ctx.op)
-      : loader.getRootStreamIds();
-    let logicalIds = loader.getRootStreamIds();
+      : loader.getStreamIds();
+    let logicalIds = loader.getStreamIds();
     const heightByPostId = new Map();
     let positionByPostId = new Map();
     let heights = logicalIds.map((id) => heightByPostId.get(id) || DEFAULT_HEIGHT);
@@ -4760,27 +4608,12 @@
       }
     }
 
-    function prepareReplyState(post) {
-      const knownChildren = loader.getKnownChildren(post.post_number);
-      if (knownChildren.length) {
-        const state = mergeSubReplyState(post.post_number, knownChildren, ctx);
-        if (!state.renderedCount) state.renderedCount = Math.min(SUB_REPLY_INITIAL_SIZE, state.all.length);
-      }
-    }
-
-    function renderTreeRevision(post, ancestry) {
+    function renderTreeRevision(post) {
       if (!post || !post.id) return 'missing';
       const id = Number(post.id);
-      const seen = ancestry || new Set();
-      if (seen.has(id)) return `${id}:cycle`;
-      const nextSeen = new Set(seen);
-      nextSeen.add(id);
       const state = ctx.subReplyState.get(Number(post.post_number));
-      const targets = state && state.targetIds instanceof Set
-        ? Array.from(state.targetIds).sort((a, b) => a - b).join(',') : '';
-      const children = loader.getKnownChildren(post.post_number)
-        .map((child) => renderTreeRevision(child, nextSeen)).join(';');
-      return `${onlyOp ? 'op' : 'all'}:${id}:${loader.getPostRevision(id)}:${Number(state && state.renderedCount) || 0}:${targets}[${children}]`;
+      const replyIds = state ? state.all.map((reply) => Number(reply.id)).join(',') : '';
+      return `${onlyOp ? 'op' : 'all'}:${id}:${loader.getPostRevision(id)}:${state && state.expanded ? 1 : 0}:${replyIds}`;
     }
 
     function rebuildNodeMap() {
@@ -4807,8 +4640,6 @@
           fragment.appendChild(placeholder);
           return;
         }
-        if (!onlyOp && loader.isNestedPostId(id)) return;
-        prepareReplyState(post);
         const revision = renderTreeRevision(post);
         const previousNode = previous.get(String(id));
         let node = previousNode && previousNode.classList.contains('ldp-post')
@@ -4818,7 +4649,6 @@
           node = renderPost(post, false, ctx);
           node.dataset.renderRevision = revision;
           ctx.tracker.observe(node);
-          if (ctx.repliesIO && Number(post.reply_count) > 0) ctx.repliesIO.observe(node);
         }
         node.dataset.streamPostId = String(id);
         node.dataset.windowEpoch = String(ctx.windowEpoch + 1);
@@ -4837,11 +4667,10 @@
       entries.forEach(({ post }) => {
         if (!post) return;
         const parent = ctx.nodeMap.get(Number(post.post_number));
-        if (!parent || onlyOp) return;
+        if (!parent) return;
         if (parent.dataset.renderRevision === renderTreeRevision(post)
-          && ctx.subReplyState.has(Number(post.post_number))
-          && !parent.querySelector(':scope > .ldp-children > .ldp-post-copy')) {
-          renderSubReplyStateInto(parent, post.post_number, ctx, 1, new Set([Number(post.id)]));
+          && ctx.subReplyState.has(Number(post.post_number))) {
+          renderSubReplyStateInto(parent, post.post_number, ctx);
         }
       });
       rebuildNodeMap();
@@ -5176,32 +5005,6 @@
       viewportWasAtBottom = isAtBottom();
       stableViewportAnchor = captureViewportAnchor();
       notePinnedActivity();
-      if (target && Array.isArray(target.path) && target.path.length > 1 && ctx.repliesIO) {
-        node = ctx.repliesIO.revealPath(target.path) || node;
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-        node = ctx.nodeMap.get(Number(target.targetPostNumber)) || node;
-        if (node) {
-          preferredFocusPostId = Number(node.dataset.postId) || preferredFocusPostId;
-          preferredProtectedUntil = performance.now() + SEEK_MAX_MS;
-          clearPinnedAnchor();
-          seekingScroll = true;
-          node.scrollIntoView({ block: 'center', behavior: 'auto' });
-          stableViewportAnchor = captureNodeViewportAnchor(node) || captureViewportAnchor();
-          preferredViewportAnchor = stableViewportAnchor;
-          pinnedAnchor = Object.assign({}, stableViewportAnchor, { pinned: true });
-          pendingResizeAnchor = stableViewportAnchor;
-          await new Promise((resolve) => requestAnimationFrame(resolve));
-          lastObservedScrollTop = ctx.scrollRoot.scrollTop;
-          stableViewportAnchor = captureNodeViewportAnchor(node) || captureViewportAnchor();
-          preferredViewportAnchor = stableViewportAnchor;
-          pinnedAnchor = Object.assign({}, stableViewportAnchor, { pinned: true });
-          if (pendingResizeAnchor || pendingResizeHeights.size || resizeRaf) {
-            pendingResizeAnchor = stableViewportAnchor;
-          }
-          seekingScroll = false;
-          notePinnedActivity();
-        }
-      }
       if (node) {
         ctx.highlightPostId = Number(node.dataset.postId) || Number(target && target.targetPostId) || 0;
         ctx.highlightUntil = Date.now() + 1700;
@@ -5346,12 +5149,9 @@
       if (post) rootNode.dataset.renderRevision = renderTreeRevision(post);
     };
     const unsubscribeStream = loader.subscribeStream(() => requestProjectionReconcile());
-    const unsubscribeProjection = loader.subscribeProjection(() => {
-      if (!onlyOp) requestProjectionReconcile();
-    });
     const unsubscribePosts = loader.subscribePosts((posts) => {
       const root = ctx.commentsEl.closest('.ldp-shell') || ctx.commentsEl;
-      posts.forEach((post) => syncRenderedPostState(root, post));
+      posts.forEach((post) => syncRenderedPostState(root, post, ctx));
       if (onlyOp && posts.some((post) => post && post.username === ctx.op)) reconcileStream(displayStreamIds()).catch(() => {});
     });
     const releasePinnedAnchor = () => beginManualScroll();
@@ -5389,7 +5189,7 @@
       destroy() {
         destroyed = true;
         if (onlyOpController) onlyOpController.abort();
-        unsubscribeStream(); unsubscribeProjection(); unsubscribePosts();
+        unsubscribeStream(); unsubscribePosts();
         cancelAnimationFrame(scrollRaf);
         cancelAnimationFrame(resizeRaf);
         if (userScrollTimer) clearTimeout(userScrollTimer);
@@ -5753,7 +5553,7 @@
         scrollRoot: body, nodeMap: new Map(), pending: [], tracker, totalComments: 0,
         subReplyState: new Map(), subReplyCache: new Map(), windowEpoch: 1,
         onPostsChanged: null, onMutation: () => { if (app.timeline) app.timeline.refresh(); },
-        signal: controller.signal, loader, topic: null, repliesIO: null,
+        signal: controller.signal, loader, topic: null, repliesIO: null, virtualFlow: null,
       };
       ctx.repliesIO = createRepliesIO(ctx);
       app.repliesIO = ctx.repliesIO;
@@ -5805,6 +5605,7 @@
         if (controller.signal.aborted) return;
         const virtualFlow = createVirtualFlow(loader, ctx);
         app.virtualFlow = virtualFlow;
+        ctx.virtualFlow = virtualFlow;
         const controls = {
           getStreamLength: () => loader.streamLength,
           getTotalPosts: () => Number((loader.topic && (loader.topic.highest_post_number || loader.topic.posts_count)) || ctx.totalComments + 1),

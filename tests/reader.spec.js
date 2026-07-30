@@ -247,7 +247,7 @@ test('opens immediately near a distant target without requesting middle ranges',
   expect(requestedIds.some((id) => id > postId(100) && id < postId(1900))).toBeFalsy();
 });
 
-test('does not leave a phantom bottom spacer after the last-floor projection settles', async ({ page }) => {
+test('timeline reaches the real last floor without trailing whitespace', async ({ page }) => {
   const postCount = 167;
   const postOverrides = Object.fromEntries(Array.from({ length: postCount - 3 }, (_, index) => {
     const postNumber = index + 3;
@@ -256,11 +256,11 @@ test('does not leave a phantom bottom spacer after the last-floor projection set
       : { reply_to_post_number: null }];
   }));
   await bootReader(page, {
-    target: postCount,
+    target: 12,
     postOverrides,
-    skipTargetAssertion: true,
     topicState: { postCount },
   });
+  await page.locator('.ldp-tl-bottom-date').click();
   await expect(page.locator(`.ldp-post[data-post-number="${postCount}"]`)).toBeInViewport();
   await page.waitForTimeout(500);
 
@@ -337,58 +337,6 @@ test('preserves the visible anchor when an earlier image changes height', async 
   }
   await expect.poll(async () => {
     const after = await target.evaluate((node) => node.getBoundingClientRect().top);
-    return Math.abs(after - before);
-  }).toBeLessThanOrEqual(2);
-});
-
-test('keeps the current floor fixed while delayed direct replies are inserted above it', async ({ page }) => {
-  const requests = await bootReader(page, { target: 10, repliesCount: 15, repliesDelay: 800 });
-  const target = page.locator('.ldp-post[data-post-number="10"]');
-  await page.waitForTimeout(550);
-  await target.evaluate((node) => node.scrollIntoView({ block: 'start' }));
-  await page.waitForTimeout(30);
-  const visibleAnchor = await page.locator('.ldp-body').evaluate((body) => {
-    const root = body.getBoundingClientRect();
-    const nodes = Array.from(body.querySelector('.ldp-virtual-window').children);
-    const node = nodes.find((item) => {
-      const rect = item.getBoundingClientRect();
-      return rect.bottom > root.top + 1 && rect.top < root.bottom - 1;
-    });
-    return Number(node && node.dataset.postNumber);
-  });
-  expect(visibleAnchor).toBe(9);
-  const before = await target.evaluate((node) => node.getBoundingClientRect().top);
-  await expect.poll(() => requests.filter((item) => item.type === 'replies').length).toBeGreaterThan(0);
-  await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"] > .ldp-children > .ldp-post-copy')).toHaveCount(3);
-  const after = await target.evaluate((node) => node.getBoundingClientRect().top);
-  expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
-});
-
-test('defers direct reply layout until continuous scrolling becomes idle', async ({ page }) => {
-  const requests = await bootReader(page, {
-    target: 9,
-    repliesCount: 3,
-    repliesDelay: 1000,
-    postOverrides: { 10: { reply_to_post_number: null } },
-  });
-  const body = page.locator('.ldp-body');
-  const parent = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"]');
-  const children = parent.locator(':scope > .ldp-children > .ldp-post-copy');
-  const anchor = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="13"]');
-
-  for (let index = 0; index < 14; index++) {
-    await body.dispatchEvent('wheel', { deltaY: 1 });
-    await page.waitForTimeout(100);
-  }
-  expect(requests.some((item) => item.type === 'replies' && item.parentId === postId(9))).toBeTruthy();
-  await expect(children).toHaveCount(0);
-  await anchor.evaluate((node) => node.scrollIntoView({ block: 'start' }));
-  await body.dispatchEvent('wheel', { deltaY: 1 });
-  const before = await anchor.evaluate((node) => node.getBoundingClientRect().top);
-
-  await expect(children).toHaveCount(3);
-  await expect.poll(async () => {
-    const after = await anchor.evaluate((node) => node.getBoundingClientRect().top);
     return Math.abs(after - before);
   }).toBeLessThanOrEqual(2);
 });
@@ -596,22 +544,41 @@ test('keeps the virtual window bounded during long scrolling', async ({ page }) 
   }
 });
 
-test('renders a nested reply once and keeps its interaction state canonical', async ({ page }) => {
-  await bootReader(page, { target: 10 });
-  const nested = page.locator('.ldp-post[data-post-number="9"] > .ldp-children .ldp-post-copy[data-post-number="10"]');
-  await expect(page.locator('.ldp-post[data-post-number="10"]')).toHaveCount(1);
-  await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="10"]')).toHaveCount(0);
-  await nested.locator('.ldp-like').click();
-  await expect(nested.locator('.ldp-like')).toHaveAttribute('data-acted', '1');
+test('keeps multi-level replies as standalone floors and expands direct replies only', async ({ page }) => {
+  const requests = await bootReader(page, {
+    target: 11,
+    repliesCount: 1,
+    postOverrides: {
+      9: { reply_count: 1 },
+      10: { reply_to_post_number: 9, reply_count: 1 },
+      11: { reply_to_post_number: 10, reply_count: 0 },
+    },
+  });
+  const parent = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"]');
+  await expect(parent).toHaveCount(1);
+  await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="10"]')).toHaveCount(1);
+  await expect(page.locator('.ldp-virtual-window > .ldp-post[data-post-number="11"]')).toHaveCount(1);
+  await expect(parent.locator(':scope > .ldp-children .ldp-embedded-reply')).toHaveCount(0);
+  await page.waitForTimeout(500);
+  expect(requests.filter((item) => item.type === 'replies')).toHaveLength(0);
+
+  const toggle = parent.locator(':scope > .ldp-actions .ldp-reply-toggle');
+  await expect(toggle).toHaveText('1 个回复⌄');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(parent.locator(':scope > .ldp-children > .ldp-embedded-reply[data-post-number="10"]')).toHaveCount(1);
+  await expect(parent.locator(':scope > .ldp-children .ldp-embedded-reply[data-post-number="11"]')).toHaveCount(0);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(parent.locator(':scope > .ldp-children .ldp-embedded-reply')).toHaveCount(0);
 });
 
-test('mounts a distant reply under its exact parent without loading middle ranges', async ({ page }) => {
+test('mounts a distant reply as its exact standalone floor without loading middle ranges', async ({ page }) => {
   const requests = await bootReader(page, {
     target: 1500,
     postOverrides: { 1500: { reply_to_post_number: 9 } },
   });
-  const parent = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"]');
-  const target = parent.locator('.ldp-children .ldp-post-copy[data-post-number="1500"]');
+  const target = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="1500"]');
   await expect(target).toHaveCount(1);
   await expect(target).toBeInViewport();
   await expect(page.locator('.ldp-post[data-post-number="1500"]')).toHaveCount(1);
@@ -621,23 +588,6 @@ test('mounts a distant reply under its exact parent without loading middle range
     .flatMap((item) => item.ids)
     .some((id) => id > postId(100) && id < postId(1400));
   expect(loadedMiddle).toBe(false);
-});
-
-test('renders a multi-level reply below the exact parent chain', async ({ page }) => {
-  await bootReader(page, {
-    target: 11,
-    postOverrides: {
-      10: { reply_to_post_number: 9 },
-      11: { reply_to_post_number: 10 },
-    },
-  });
-  const parent = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"]');
-  const child = parent.locator(':scope > .ldp-children > .ldp-post-copy[data-post-number="10"]');
-  const grandchild = child.locator(':scope > .ldp-children > .ldp-post-copy[data-post-number="11"]');
-  await expect(child).toHaveCount(1);
-  await expect(grandchild).toHaveCount(1);
-  await expect(grandchild).toBeInViewport();
-  await expect(page.locator('.ldp-post[data-post-number="11"]')).toHaveCount(1);
 });
 
 test('keeps replies to the opening post in the root timeline', async ({ page }) => {
@@ -701,15 +651,24 @@ test('preserves interaction state after a virtual post remounts', async ({ page 
   await expect(postTen.locator('.ldp-like')).toHaveAttribute('data-acted', '1');
 });
 
-test('loads and incrementally reveals more than twelve direct replies', async ({ page }) => {
-  const requests = await bootReader(page, { target: 9, repliesCount: 15 });
+test('loads all direct replies on demand and reuses them after collapse', async ({ page }) => {
+  const requests = await bootReader(page, {
+    target: 9,
+    repliesCount: 15,
+    postOverrides: { 9: { reply_count: 15 } },
+  });
   const parent = page.locator('.ldp-virtual-window > .ldp-post[data-post-number="9"]');
-  await expect.poll(() => requests.filter((item) => item.type === 'replies').length).toBeGreaterThan(0);
-  await expect(parent.locator(':scope > .ldp-children > .ldp-post-copy')).toHaveCount(3);
-  await parent.locator(':scope > .ldp-sub-actions .ldp-load-more-replies').click();
-  await expect(parent.locator(':scope > .ldp-children > .ldp-post-copy')).toHaveCount(13);
-  await parent.locator(':scope > .ldp-sub-actions .ldp-load-more-replies').click();
-  await expect(parent.locator(':scope > .ldp-children > .ldp-post-copy')).toHaveCount(15);
+  const toggle = parent.locator(':scope > .ldp-actions .ldp-reply-toggle');
+  await page.waitForTimeout(500);
+  expect(requests.filter((item) => item.type === 'replies')).toHaveLength(0);
+  await toggle.click();
+  await expect(parent.locator(':scope > .ldp-children > .ldp-embedded-reply')).toHaveCount(15);
+  expect(requests.filter((item) => item.type === 'replies')).toHaveLength(1);
+  await toggle.click();
+  await expect(parent.locator(':scope > .ldp-children > .ldp-embedded-reply')).toHaveCount(0);
+  await toggle.click();
+  await expect(parent.locator(':scope > .ldp-children > .ldp-embedded-reply')).toHaveCount(15);
+  expect(requests.filter((item) => item.type === 'replies')).toHaveLength(1);
 });
 
 test('reloads the latest stream when a fresh-cache new-post notice is opened', async ({ page }) => {
