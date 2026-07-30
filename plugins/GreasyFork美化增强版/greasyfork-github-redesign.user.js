@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GreasyFork 美化增强版 | GitHub Redesign
 // @namespace    https://github.com/ywainzh/linuxdo-read-script
-// @version      1.2.4
+// @version      1.2.5
 // @description  将 Greasy Fork 全量美化为 GitHub 风格，并修复页面跳转时原生界面闪现的问题。
 // @author       咸鱼真人（原作），ywainzh（修复维护）
 // @match        https://greasyfork.org/*
@@ -13,8 +13,11 @@
 
 const GF_BOOT_THEME_STORAGE_KEY = 'greasyfork-beautifier-theme';
 const GF_BOOT_ATTRIBUTE = 'data-gf-booting';
+const GF_LEAVING_ATTRIBUTE = 'data-gf-leaving';
 const GF_BOOT_TIMEOUT_MS = 2500;
+const GF_LEAVING_TIMEOUT_MS = 1500;
 let gfBootReleaseTimer = 0;
+let gfLeavingReleaseTimer = 0;
 
 const releaseGreasyForkBoot = () => {
     if (gfBootReleaseTimer) {
@@ -32,21 +35,40 @@ const releaseGreasyForkBootAfterPaint = () => {
     }
 };
 
+const clearGreasyForkLeaving = () => {
+    if (gfLeavingReleaseTimer) {
+        clearTimeout(gfLeavingReleaseTimer);
+        gfLeavingReleaseTimer = 0;
+    }
+    document.documentElement?.removeAttribute(GF_LEAVING_ATTRIBUTE);
+};
+
+const beginGreasyForkLeaving = () => {
+    const root = document.documentElement;
+    if (!root) return;
+    root.setAttribute(GF_LEAVING_ATTRIBUTE, '');
+    if (gfLeavingReleaseTimer) clearTimeout(gfLeavingReleaseTimer);
+    gfLeavingReleaseTimer = window.setTimeout(clearGreasyForkLeaving, GF_LEAVING_TIMEOUT_MS);
+};
+
 // Hide the native Greasy Fork shell before its first paint. A watchdog restores
 // the original page if later initialization fails for any reason.
 (function beginGreasyForkBoot() {
     const criticalStyle = document.createElement('style');
     criticalStyle.id = 'gf-boot-style';
     criticalStyle.textContent = `
-        html[data-gf-booting] {
+        html[data-gf-booting],
+        html[data-gf-leaving] {
             background: #0d1117 !important;
             color-scheme: dark;
         }
-        html[data-gf-theme="light"][data-gf-booting] {
+        html[data-gf-theme="light"][data-gf-booting],
+        html[data-gf-theme="light"][data-gf-leaving] {
             background: #ffffff !important;
             color-scheme: light;
         }
-        html[data-gf-booting] body {
+        html[data-gf-booting] body,
+        html[data-gf-leaving] body {
             visibility: hidden !important;
         }
     `;
@@ -80,8 +102,44 @@ const releaseGreasyForkBootAfterPaint = () => {
 
     gfBootReleaseTimer = window.setTimeout(releaseGreasyForkBoot, GF_BOOT_TIMEOUT_MS);
     window.addEventListener('pageshow', (event) => {
+        clearGreasyForkLeaving();
         if (event.persisted) releaseGreasyForkBoot();
     });
+})();
+
+// Keep the themed shell in place while a same-origin navigation replaces the
+// document. The timeout restores the current page if navigation is cancelled.
+(function installGreasyForkNavigationGuard() {
+    const isPlainSameOriginLink = (event, link) => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
+        if (link.hasAttribute('download') || (link.target && link.target.toLowerCase() !== '_self')) return false;
+        const rawHref = link.getAttribute('href') || '';
+        if (!rawHref || rawHref.startsWith('#') || /^javascript:/i.test(rawHref)) return false;
+        const url = new URL(link.href, location.href);
+        if (url.origin !== location.origin) return false;
+        return url.pathname !== location.pathname || url.search !== location.search || !url.hash;
+    };
+
+    document.addEventListener('click', (event) => {
+        const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+        if (!link || !isPlainSameOriginLink(event, link)) return;
+        queueMicrotask(() => {
+            if (!event.defaultPrevented) beginGreasyForkLeaving();
+        });
+    }, true);
+
+    document.addEventListener('submit', (event) => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement) || form.target === '_blank') return;
+        const action = new URL(form.action || location.href, location.href);
+        if (action.origin !== location.origin) return;
+        queueMicrotask(() => {
+            if (!event.defaultPrevented) beginGreasyForkLeaving();
+        });
+    }, true);
+
+    window.addEventListener('beforeunload', beginGreasyForkLeaving);
+    window.addEventListener('pagehide', beginGreasyForkLeaving);
 })();
 
 // Inject styles as early as possible
@@ -2116,11 +2174,11 @@ if (document.readyState === 'interactive' || document.readyState === 'complete')
 function setupUserDashboard() {
     const moduleConfig = [
         { id: 'control-panel', icon: '<path d="M4 4h16v16H4z"/><path d="M8 8h2M14 8h2M8 12h8M8 16h5"/>' },
+        { id: 'user-script-list-section', icon: '<path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h4"/>' },
         { id: 'user-discussions-on-scripts-written', icon: '<path d="M4 5h16v11H8l-4 4z"/><path d="M8 9h8M8 12h5"/>' },
         { id: 'user-discussions', icon: '<path d="M5 4h14v13H8l-3 3z"/><path d="M8 8h8M8 11h6"/>' },
         { id: 'user-conversations', icon: '<path d="M4 6h16v12H8l-4 3z"/><path d="m5 7 7 5 7-5"/>' },
-        { id: 'user-script-sets-section', icon: '<path d="M5 5h6l2 2h6v12H5z"/><path d="M8 12h6M8 15h4"/>' },
-        { id: 'user-script-list-section', icon: '<path d="M6 4h12v16H6z"/><path d="M9 8h6M9 12h6M9 16h4"/>' }
+        { id: 'user-script-sets-section', icon: '<path d="M5 5h6l2 2h6v12H5z"/><path d="M8 12h6M8 15h4"/>' }
     ];
     const modules = moduleConfig.map((item) => {
         const element = document.getElementById(item.id);
