@@ -5,7 +5,7 @@
 ## 安装
 
 - [从 GitHub Raw 安装](https://raw.githubusercontent.com/ywainzh/linuxdo-read-script/main/plugins/GreasyFork%E7%BE%8E%E5%8C%96%E5%A2%9E%E5%BC%BA%E7%89%88/greasyfork-github-redesign.user.js)
-- Greasy Fork 安装地址将在首次发布后补充。
+- [从 Greasy Fork 安装](https://greasyfork.org/zh-CN/scripts/589199-greasyfork-%E7%BE%8E%E5%8C%96%E5%A2%9E%E5%BC%BA%E7%89%88-github-redesign)
 
 需要 Tampermonkey、Violentmonkey 等用户脚本管理器。脚本匹配：
 

@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         LinuxDo Greasy Fork 发布助手
 // @namespace    https://github.com/ywainzh/linuxdo-read-script
-// @version      0.3.1
+// @version      0.3.2
 // @license      MIT
 // @description  在项目脚本的 Greasy Fork 页面一键从 GitHub 拉取并发布更新。
 // @author       ywainzh
 // @match        https://greasyfork.org/*/scripts/586863*
 // @match        https://greasyfork.org/*/scripts/588940*
 // @match        https://greasyfork.org/*/scripts/588943*
+// @match        https://greasyfork.org/*/scripts/589199*
 // @match        https://greasyfork.org/*/users/1622808-ywainzh*
 // @match        https://greasyfork.org/*/script_versions/*
 // @match        https://greasyfork.org/*/scripts/*/versions/*
@@ -35,6 +36,11 @@
       id: '588943',
       name: 'LinuxDo Greasy Fork 发布助手',
       path: 'tools/greasyfork-update-helper.user.js',
+    }),
+    '589199': Object.freeze({
+      id: '589199',
+      name: 'GreasyFork 美化增强版 | GitHub Redesign',
+      path: 'plugins/GreasyFork美化增强版/greasyfork-github-redesign.user.js',
     }),
   });
 
